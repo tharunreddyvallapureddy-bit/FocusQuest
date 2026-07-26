@@ -639,12 +639,9 @@ export const App: React.FC = () => {
                     }`}
                   >
                     <div className="flex items-start gap-2.5">
-                      <input
-                        type="checkbox"
-                        checked={goal.isCompleted}
-                        onChange={() => handleToggleGoal(goal)}
-                        className="mt-1 w-4 h-4 rounded border-slate-700 bg-slate-950 text-emerald-500 accent-emerald-500 cursor-pointer"
-                      />
+                      <div className="mt-0.5 text-base select-none shrink-0">
+                        {goal.isCompleted ? "✅" : "⏳"}
+                      </div>
                       <div className="flex-1">
                         <div className="flex justify-between items-center">
                           <span
