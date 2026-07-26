@@ -109,7 +109,7 @@ export const App: React.FC = () => {
   const [authMode, setAuthMode] = useState<"signin" | "signup">("signin");
   const [authName, setAuthName] = useState("");
   const [authMobile, setAuthMobile] = useState("");
-  const [authUpiId, setAuthUpiId] = useState("6281752093@upi");
+  const [authUpiId, setAuthUpiId] = useState("");
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
   const [authError, setAuthError] = useState<string | null>(null);
@@ -465,42 +465,13 @@ export const App: React.FC = () => {
             </p>
           </div>
 
-          <form onSubmit={handleAuthSubmit} className="space-y-2">
-            {authMode === "signup" && (
-              <>
-                <input
-                  type="text"
-                  placeholder="Full Name (e.g. Tharun Reddy)"
-                  value={authName}
-                  onChange={(e) => setAuthName(e.target.value)}
-                  className="w-full px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-emerald-500"
-                  required
-                />
-                <input
-                  type="tel"
-                  placeholder="Mobile Number (e.g. 6281752093)"
-                  value={authMobile}
-                  onChange={(e) => setAuthMobile(e.target.value)}
-                  className="w-full px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-emerald-500"
-                  required
-                />
-                <input
-                  type="text"
-                  placeholder="Your UPI ID (e.g. yourname@upi)"
-                  value={authUpiId}
-                  onChange={(e) => setAuthUpiId(e.target.value)}
-                  className="w-full px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-emerald-500 font-mono"
-                  required
-                />
-              </>
-            )}
-
+          <form onSubmit={handleAuthSubmit} className="space-y-2.5">
             <input
               type="email"
               placeholder="Email address"
               value={authEmail}
               onChange={(e) => setAuthEmail(e.target.value)}
-              className="w-full px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-emerald-500"
+              className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-emerald-500"
               required
             />
             <input
@@ -508,7 +479,7 @@ export const App: React.FC = () => {
               placeholder="Password"
               value={authPassword}
               onChange={(e) => setAuthPassword(e.target.value)}
-              className="w-full px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-emerald-500"
+              className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-emerald-500"
               required
             />
 
@@ -520,7 +491,7 @@ export const App: React.FC = () => {
 
             <button
               type="submit"
-              className="w-full py-2 text-xs font-bold rounded-lg bg-gradient-to-r from-emerald-500 to-teal-500 text-slate-950 shadow-lg cursor-pointer hover:from-emerald-400 hover:to-teal-400 transition-all mt-1"
+              className="w-full py-2.5 text-xs font-bold rounded-lg bg-gradient-to-r from-emerald-500 to-teal-500 text-slate-950 shadow-lg cursor-pointer hover:from-emerald-400 hover:to-teal-400 transition-all mt-1"
             >
               {authMode === "signin" ? "Sign In to Focus Quest" : "Create Account & Start Quest"}
             </button>
@@ -531,7 +502,7 @@ export const App: React.FC = () => {
               className="w-full text-center text-[11px] text-slate-400 hover:text-slate-200 cursor-pointer pt-1"
             >
               {authMode === "signin"
-                ? "Need an account? Sign Up with Name, Phone & UPI ID"
+                ? "Need an account? Sign Up"
                 : "Already have an account? Sign In"}
             </button>
           </form>
