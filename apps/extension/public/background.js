@@ -2,7 +2,7 @@
 // Features:
 // 1. Dynamic Whitelist & Blacklist domain evaluation from user storage.
 // 2. Active Window & Idle Detection (prevents AFK study farming).
-// 3. Real-time HP decay (-50 HP / 30 min on distraction) & Focus heal (+50 HP / 30 min on study).
+// 3. Real-time HP decay (-50 HP / 5 min on distraction) & Focus heal (+50 HP / 30 min on study).
 // 4. AUTOMATIC BACKGROUND GOAL VERIFICATION: Accumulates verified study minutes, auto-ticks completed quest checkboxes, and awards +500 Gold!
 // 5. Automatic DeclarativeNetRequest & Content Script Blocking when HP <= 0.
 
@@ -22,6 +22,8 @@ const DEFAULT_WHITELIST = [
 ];
 
 const DEFAULT_BLACKLIST = [
+  "youtube.com",
+  "youtu.be",
   "instagram.com",
   "tiktok.com",
   "netflix.com",
@@ -101,7 +103,12 @@ function initializeState() {
 
       const initialGoals = result.goals || DEFAULT_GOALS;
       const initialWhitelist = result.whitelist || DEFAULT_WHITELIST;
-      const initialBlacklist = result.blacklist || DEFAULT_BLACKLIST;
+      
+      // Ensure Youtube & YouTube Shorts are always present in Blacklist
+      let initialBlacklist = result.blacklist || DEFAULT_BLACKLIST;
+      if (!initialBlacklist.includes("youtube.com")) {
+        initialBlacklist = Array.from(new Set([...initialBlacklist, ...DEFAULT_BLACKLIST]));
+      }
 
       chrome.storage.local.set({
         playerState: initialPlayer,
@@ -163,6 +170,9 @@ chrome.runtime.onStartup.addListener(() => {
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name !== "focusquest-heartbeat") return;
 
+  // Re-evaluate current active tab on every alarm tick
+  await evaluateActiveTab();
+
   // Check Idle State (Pause if user is away/idle > 60s)
   chrome.idle.queryState(60, (idleState) => {
     if (idleState !== "active") {
@@ -179,17 +189,16 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
         maxHp = maxHp || BASE_MAX_HP;
 
         let currentGoals = goals || DEFAULT_GOALS;
-        let stateChanged = false;
 
         // Apply rules:
-        // - Distracting: -10 HP / min (-50 HP per 5 mins)
+        // - Distracting (e.g. YouTube): -10 HP / min (-50 HP per 5 mins)
         // - Educational: +1.67 HP / min (+50 HP per 30 mins), +1 XP, +1.67 Gold
         if (activeCategory === "distracting" && focusMode) {
           hp = Math.max(0, hp - 10);
           if (hp <= 0) {
             isDead = true;
           }
-          console.log(`[Focus Quest] Distraction penalty applied (-10 HP/min). HP: ${hp.toFixed(1)}`);
+          console.log(`[Focus Quest] Distraction penalty applied (-10 HP/min). HP now: ${hp.toFixed(1)}`);
         } else if (activeCategory === "educational") {
           hp = Math.min(maxHp, hp + 1.67);
           intellectXp += 1;
@@ -206,7 +215,6 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
             const nextProgress = (g.progressMinutes || 0) + 1;
 
             if (nextProgress >= target) {
-              stateChanged = true;
               coins += 500; // Award 500 Gold per completed goal
               hp = Math.min(maxHp, hp + 50);
               intellectXp += 50;

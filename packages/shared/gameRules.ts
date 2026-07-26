@@ -13,6 +13,8 @@ export const WHITELISTED_SITES: string[] = [
 ];
 
 export const BLACKLISTED_SITES: string[] = [
+  "youtube.com",
+  "youtu.be",
   "instagram.com",
   "netflix.com",
   "tiktok.com",

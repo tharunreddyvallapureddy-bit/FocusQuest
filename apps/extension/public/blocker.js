@@ -193,6 +193,8 @@ function checkVerificationState() {
         if (!playerState) return;
 
         const defaultBlacklist = [
+          "youtube.com",
+          "youtu.be",
           "instagram.com",
           "tiktok.com",
           "netflix.com",
