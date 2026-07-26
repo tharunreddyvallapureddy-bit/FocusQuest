@@ -557,7 +557,7 @@ export const App: React.FC = () => {
                 <button
                   onClick={() => setShowUpiModal(true)}
                   className="flex items-center gap-1 bg-slate-900 hover:bg-slate-800 px-2 py-0.5 rounded-full border border-amber-500/40 transition-all cursor-pointer shadow-sm group"
-                  title="Click to Sell Gold for Real Money via UPI (6281752093@upi)"
+                  title="Click to Sell Gold for Real Money via UPI"
                 >
                   <span className="text-xs">🪙</span>
                   <span className="text-xs font-bold text-amber-400">
