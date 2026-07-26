@@ -1,4 +1,20 @@
 import React, { useEffect, useState } from "react";
+import {
+  BASE_MAX_HP,
+  calculateLevel,
+  goldToINR,
+  getDiceBearAvatar,
+} from "../lib/mechanics";
+import {
+  auth,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  signOut,
+  onAuthStateChanged,
+  syncProfileToFirestore,
+  loadProfileFromFirestore,
+  User,
+} from "../lib/firebase";
 
 type Tab = "stats" | "goals" | "training" | "bounties";
 
@@ -14,18 +30,20 @@ type PlayerState = {
   hp: number;
   maxHp: number;
   coins: number;
-  level: number;
   intellectXp: number;
   isDead: boolean;
+  avatarSeed: string;
+  focusMode: boolean; // Active DNR blocking toggle
 };
 
 const DEFAULT_PLAYER: PlayerState = {
-  hp: 100,
-  maxHp: 100,
-  coins: 50,
-  level: 1,
+  hp: 300,
+  maxHp: BASE_MAX_HP,
+  coins: 100,
   intellectXp: 0,
   isDead: false,
+  avatarSeed: "AdventurerHero",
+  focusMode: true,
 };
 
 const DEFAULT_GOALS: Goal[] = [
@@ -52,18 +70,11 @@ const DEFAULT_GOALS: Goal[] = [
   },
 ];
 
-function getAvatarUrl(player: PlayerState) {
-  const status =
-    player.hp <= 0 ? "injured" : player.hp < 30 ? "injured" : "healthy";
-  return `https://image.pollinations.ai/prompt/pixel_art_warrior_level_${player.level}_${status}`;
-}
-
 export const App: React.FC = () => {
   const [tab, setTab] = useState<Tab>("stats");
   const [player, setPlayer] = useState<PlayerState>(DEFAULT_PLAYER);
   const [goals, setGoals] = useState<Goal[]>(DEFAULT_GOALS);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
   const [bounties, setBounties] = useState<any[]>([]);
   const [bountiesLoading, setBountiesLoading] = useState(false);
   const [newGoalTitle, setNewGoalTitle] = useState("");
@@ -72,9 +83,37 @@ export const App: React.FC = () => {
   const [showAddGoal, setShowAddGoal] = useState(false);
   const [notification, setNotification] = useState<string | null>(null);
 
-  // Load data from local storage on mount
+  // Firebase Auth State
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [authMode, setAuthMode] = useState<"signin" | "signup">("signin");
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authError, setAuthError] = useState<string | null>(null);
+
+  // Initialize Auth & Storage listeners
   useEffect(() => {
     loadFromLocalStorage();
+
+    const unsubscribeAuth = onAuthStateChanged(auth, async (user) => {
+      setCurrentUser(user);
+      if (user) {
+        const cloudProfile = await loadProfileFromFirestore(user.uid);
+        if (cloudProfile) {
+          const synced: PlayerState = {
+            hp: cloudProfile.hp ?? 300,
+            maxHp: cloudProfile.maxHp ?? 300,
+            coins: cloudProfile.gold ?? 100,
+            intellectXp: cloudProfile.xp ?? 0,
+            isDead: cloudProfile.isDead ?? false,
+            avatarSeed: cloudProfile.avatarSeed ?? "AdventurerHero",
+            focusMode: cloudProfile.focusMode ?? true,
+          };
+          setPlayer(synced);
+          saveToLocal(synced);
+        }
+      }
+    });
 
     const listener = (
       changes: { [key: string]: chrome.storage.StorageChange },
@@ -94,6 +133,7 @@ export const App: React.FC = () => {
     }
 
     return () => {
+      unsubscribeAuth();
       if (typeof chrome !== "undefined" && chrome.storage) {
         chrome.storage.local.onChanged.removeListener(listener);
       }
@@ -130,17 +170,35 @@ export const App: React.FC = () => {
     );
   };
 
+  const saveToLocal = (next: PlayerState) => {
+    if (typeof chrome !== "undefined" && chrome.storage) {
+      chrome.storage.local.set({ playerState: next });
+    }
+  };
+
   const persistPlayer = async (next: PlayerState) => {
     setPlayer(next);
-    if (typeof chrome === "undefined" || !chrome.storage) return;
-    setSaving(true);
-    chrome.storage.local.set({ playerState: next }, () => setSaving(false));
+    saveToLocal(next);
+
+    if (currentUser) {
+      const currentLevel = calculateLevel(next.intellectXp);
+      await syncProfileToFirestore(currentUser.uid, {
+        xp: next.intellectXp,
+        hp: next.hp,
+        maxHp: next.maxHp,
+        gold: next.coins,
+        level: currentLevel,
+        isDead: next.isDead,
+        avatarSeed: next.avatarSeed,
+      });
+    }
   };
 
   const persistGoals = (next: Goal[]) => {
     setGoals(next);
-    if (typeof chrome === "undefined" || !chrome.storage) return;
-    chrome.storage.local.set({ goals: next });
+    if (typeof chrome !== "undefined" && chrome.storage) {
+      chrome.storage.local.set({ goals: next });
+    }
   };
 
   const handleToggleGoal = async (goal: Goal) => {
@@ -151,23 +209,20 @@ export const App: React.FC = () => {
     );
     persistGoals(updatedGoals);
 
-    const rewardHp = 25;
+    const rewardHp = 50;
     const rewardCoins = 50;
-    const rewardXp = 20;
+    const rewardXp = 30;
 
     const newXp = player.intellectXp + rewardXp;
-    const newLevel = Math.floor(newXp / 100) + 1;
-
     const next: PlayerState = {
       ...player,
       hp: Math.min(player.hp + rewardHp, player.maxHp),
       coins: player.coins + rewardCoins,
       intellectXp: newXp,
-      level: newLevel,
       isDead: false,
     };
     await persistPlayer(next);
-    triggerToast(`🎉 Quest Complete! +${rewardCoins} Coins, +${rewardHp} HP, +${rewardXp} INT XP`);
+    triggerToast(`🎉 Quest Complete! +${rewardCoins} Gold, +${rewardHp} HP, +${rewardXp} XP`);
   };
 
   const handleAddGoal = (e: React.FormEvent) => {
@@ -192,22 +247,51 @@ export const App: React.FC = () => {
 
   const handleGiveTrainingXp = async (amount: number) => {
     const newXp = player.intellectXp + amount;
-    const newLevel = Math.floor(newXp / 100) + 1;
     const wasDead = player.isDead;
-    const newHp = wasDead ? 30 : player.hp;
+    const newHp = wasDead ? 100 : player.hp;
 
     const next: PlayerState = {
       ...player,
       intellectXp: newXp,
-      level: newLevel,
       hp: newHp,
       isDead: false,
     };
     await persistPlayer(next);
     if (wasDead) {
-      triggerToast("✨ Hero Revived! HP restored to 30.");
+      triggerToast("✨ Hero Resurrected! HP restored to 100.");
     } else {
-      triggerToast(`🧠 Intellect Boost! +${amount} INT XP`);
+      triggerToast(`🧠 Mastery Gain! +${amount} XP`);
+    }
+  };
+
+  const handleToggleFocusMode = async () => {
+    const next = { ...player, focusMode: !player.focusMode };
+    await persistPlayer(next);
+    triggerToast(
+      next.focusMode ? "🛡️ Focus Shield Enabled" : "⚠️ Passive Mode Active"
+    );
+  };
+
+  const handleRandomizeAvatar = async () => {
+    const newSeed = `Adventurer_${Math.floor(Math.random() * 10000)}`;
+    const next = { ...player, avatarSeed: newSeed };
+    await persistPlayer(next);
+    triggerToast("🎨 New Adventurer Gear Equiped!");
+  };
+
+  const handleAuthSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError(null);
+    try {
+      if (authMode === "signup") {
+        await createUserWithEmailAndPassword(auth, authEmail, authPassword);
+      } else {
+        await signInWithEmailAndPassword(auth, authEmail, authPassword);
+      }
+      setShowAuthModal(false);
+      triggerToast("🔥 Connected to Firebase Cloud!");
+    } catch (err: any) {
+      setAuthError(err.message || "Auth failed");
     }
   };
 
@@ -216,43 +300,20 @@ export const App: React.FC = () => {
     setBountiesLoading(true);
 
     try {
+      const res = await fetch(
+        "https://api.github.com/search/issues?q=label:good-first-issue+language:javascript&per_page=6"
+      );
+      const data = await res.json();
+      const items = Array.isArray(data.items) ? data.items : [];
+      setBounties(items);
+
       if (typeof chrome !== "undefined" && chrome.storage) {
-        chrome.storage.local.get(
-          ["bountiesCache", "bountiesFetchedAt"],
-          async (result) => {
-            const fetchedAt = result.bountiesFetchedAt as string | undefined;
-            const cache = result.bountiesCache as any[] | undefined;
-
-            const now = Date.now();
-            const hourMs = 60 * 60 * 1000;
-            if (cache && fetchedAt && now - Date.parse(fetchedAt) < hourMs) {
-              setBounties(cache);
-              setBountiesLoading(false);
-              return;
-            }
-
-            const res = await fetch(
-              "https://api.github.com/search/issues?q=label:good-first-issue+language:javascript&per_page=6"
-            );
-            const data = await res.json();
-            const items = Array.isArray(data.items) ? data.items : [];
-            setBounties(items);
-
-            chrome.storage.local.set({
-              bountiesCache: items,
-              bountiesFetchedAt: new Date().toISOString(),
-            });
-            setBountiesLoading(false);
-          }
-        );
-      } else {
-        const res = await fetch(
-          "https://api.github.com/search/issues?q=label:good-first-issue+language:javascript&per_page=6"
-        );
-        const data = await res.json();
-        setBounties(Array.isArray(data.items) ? data.items : []);
-        setBountiesLoading(false);
+        chrome.storage.local.set({
+          bountiesCache: items,
+          bountiesFetchedAt: new Date().toISOString(),
+        });
       }
+      setBountiesLoading(false);
     } catch (e) {
       console.error("Failed to load bounties", e);
       setBountiesLoading(false);
@@ -265,52 +326,44 @@ export const App: React.FC = () => {
     } else {
       window.open(url, "_blank");
     }
-    handleGiveTrainingXp(5);
+    handleGiveTrainingXp(10);
   };
 
-  const avatarUrl = getAvatarUrl(player);
-  const hpPercent = Math.max(0, Math.min(100, (player.hp / player.maxHp) * 100));
-  const xpInLevel = player.intellectXp % 100;
+  const level = calculateLevel(player.intellectXp);
+  const avatarUrl = getDiceBearAvatar(player.avatarSeed);
+  const hpPercent = Math.max(0, Math.min(100, (player.hp / BASE_MAX_HP) * 100));
 
   return (
-    <div className="w-[380px] h-[580px] bg-slate-950 text-slate-100 flex flex-col font-sans select-none overflow-hidden relative border border-slate-800/80 shadow-2xl">
+    <div className="w-[380px] h-[600px] bg-slate-950 text-slate-100 flex flex-col font-sans select-none overflow-hidden relative border border-slate-800 shadow-2xl">
       {/* Toast Notification */}
       {notification && (
-        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-50 px-3 py-1.5 rounded-full bg-emerald-500/90 text-slate-950 font-semibold text-xs shadow-lg backdrop-blur-md animate-bounce">
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-50 px-3.5 py-1.5 rounded-full bg-emerald-500 text-slate-950 font-bold text-xs shadow-xl backdrop-blur-md animate-bounce">
           {notification}
         </div>
       )}
 
       {/* Cyber Hero HUD Header */}
-      <header className="px-4 py-3.5 bg-gradient-to-b from-slate-900 to-slate-950 border-b border-slate-800/80 relative">
+      <header className="px-4 py-3.5 bg-gradient-to-b from-slate-900 to-slate-950 border-b border-slate-800/80">
         <div className="flex items-center gap-3">
           {/* Avatar Ring */}
-          <div className="relative">
+          <div className="relative group cursor-pointer" onClick={handleRandomizeAvatar} title="Click to swap avatar skin">
             <div
               className={`w-14 h-14 rounded-xl p-0.5 transition-all duration-300 ${
                 player.isDead
                   ? "bg-gradient-to-br from-rose-600 to-red-900 glow-rose"
-                  : player.hp < 30
+                  : player.hp < 100
                   ? "bg-gradient-to-br from-amber-500 to-orange-700 glow-amber"
-                  : "bg-gradient-to-br from-emerald-400 via-teal-500 to-cyan-600 glow-emerald animate-pulse-subtle"
+                  : "bg-gradient-to-br from-emerald-400 via-teal-500 to-cyan-600 glow-emerald"
               }`}
             >
               <img
                 src={avatarUrl}
-                alt="Hero Avatar"
+                alt="Adventurer Avatar"
                 className="w-full h-full rounded-[10px] object-cover bg-slate-900"
               />
             </div>
-            <span
-              className={`absolute -bottom-1 -right-1 px-1.5 py-0.5 text-[9px] font-black uppercase tracking-wider rounded-md border border-slate-800 ${
-                player.isDead
-                  ? "bg-rose-900 text-rose-200"
-                  : player.hp < 30
-                  ? "bg-amber-900 text-amber-200"
-                  : "bg-emerald-950 text-emerald-300"
-              }`}
-            >
-              Lvl {player.level}
+            <span className="absolute -bottom-1 -right-1 px-1.5 py-0.5 text-[9px] font-black uppercase rounded bg-emerald-950 text-emerald-300 border border-slate-800">
+              Lvl {level}
             </span>
           </div>
 
@@ -320,24 +373,40 @@ export const App: React.FC = () => {
               <h1 className="text-base font-extrabold tracking-tight text-gradient-emerald">
                 Focus Quest
               </h1>
-              <div className="flex items-center gap-1.5 bg-slate-900/80 px-2 py-0.5 rounded-full border border-amber-500/30">
-                <span className="text-xs">🪙</span>
-                <span className="text-xs font-bold text-amber-400">
-                  {player.coins}
-                </span>
+              
+              <div className="flex items-center gap-2">
+                {/* Gold Valuation Pill */}
+                <div className="flex items-center gap-1 bg-slate-900 px-2 py-0.5 rounded-full border border-amber-500/40">
+                  <span className="text-xs">🪙</span>
+                  <span className="text-xs font-bold text-amber-400">
+                    {player.coins}
+                  </span>
+                  <span className="text-[9px] text-amber-300 font-mono">
+                    ({goldToINR(player.coins)})
+                  </span>
+                </div>
+
+                {/* Cloud Sync Status Button */}
+                <button
+                  onClick={() => setShowAuthModal(true)}
+                  className="text-xs p-1 rounded hover:bg-slate-800 text-slate-400"
+                  title={currentUser ? `Signed in as ${currentUser.email}` : "Cloud Sync (Firebase)"}
+                >
+                  {currentUser ? "☁️" : "🔑"}
+                </button>
               </div>
             </div>
 
-            {/* Health Bar */}
+            {/* Health Bar (Scale 300 HP) */}
             <div className="space-y-0.5">
               <div className="flex justify-between text-[11px] font-medium text-slate-300">
                 <span className="flex items-center gap-1">
                   <span className={player.isDead ? "text-rose-400" : "text-emerald-400"}>
-                    {player.isDead ? "💀 DEAD" : "❤️ HP"}
+                    {player.isDead ? "💀 FAINTED" : "❤️ HP"}
                   </span>
                 </span>
                 <span className="font-mono text-[10px] text-slate-400">
-                  {player.hp} / {player.maxHp}
+                  {player.hp} / {BASE_MAX_HP} HP
                 </span>
               </div>
               <div className="h-2 rounded-full bg-slate-900 overflow-hidden border border-slate-800 p-0.5">
@@ -345,7 +414,7 @@ export const App: React.FC = () => {
                   className={`h-full rounded-full transition-all duration-500 ${
                     player.isDead
                       ? "bg-rose-600"
-                      : player.hp < 30
+                      : player.hp < 100
                       ? "bg-amber-500"
                       : "bg-gradient-to-r from-emerald-500 to-teal-400"
                   }`}
@@ -354,20 +423,10 @@ export const App: React.FC = () => {
               </div>
             </div>
 
-            {/* Intellect XP Bar */}
-            <div className="space-y-0.5">
-              <div className="flex justify-between text-[10px] font-medium text-slate-400">
-                <span>🧠 Intellect XP</span>
-                <span className="font-mono text-[10px] text-purple-400">
-                  {xpInLevel} / 100 XP
-                </span>
-              </div>
-              <div className="h-1.5 rounded-full bg-slate-900 overflow-hidden border border-slate-800">
-                <div
-                  className="h-full bg-gradient-to-r from-purple-500 to-indigo-500 transition-all duration-500"
-                  style={{ width: `${xpInLevel}%` }}
-                />
-              </div>
+            {/* XP Progression */}
+            <div className="flex justify-between items-center text-[10px] font-medium text-purple-400">
+              <span>🧠 Mastery XP: {player.intellectXp}</span>
+              <span>Level {level}</span>
             </div>
           </div>
         </div>
@@ -377,9 +436,9 @@ export const App: React.FC = () => {
       <nav className="flex bg-slate-900/90 border-b border-slate-800/80 backdrop-blur-md">
         {(
           [
-            { id: "stats", label: "Stats", icon: "📊" },
+            { id: "stats", label: "Shield", icon: "🛡️" },
             { id: "goals", label: "Quests", icon: "📜" },
-            { id: "training", label: "Training", icon: "⚔️" },
+            { id: "training", label: "Games", icon: "🧩" },
             { id: "bounties", label: "Bounties", icon: "🎯" },
           ] as const
         ).map((t) => (
@@ -406,94 +465,88 @@ export const App: React.FC = () => {
         {loading ? (
           <div className="flex flex-col items-center justify-center h-full space-y-2">
             <div className="w-8 h-8 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
-            <div className="text-xs text-slate-400 font-medium">
-              Summoning Focus Quest...
-            </div>
+            <div className="text-xs text-slate-400">Initializing Focus Quest...</div>
           </div>
         ) : tab === "stats" ? (
           <section className="space-y-3">
-            {/* Status Hero Card */}
-            <div
-              className={`p-3.5 rounded-xl border glass-card relative overflow-hidden ${
-                player.isDead
-                  ? "border-rose-500/40 bg-rose-950/20"
-                  : player.hp < 30
-                  ? "border-amber-500/40 bg-amber-950/20"
-                  : "border-emerald-500/30 bg-emerald-950/20"
-              }`}
-            >
-              <div className="flex justify-between items-start">
+            {/* Focus Shield Status Block (Custom Visual Card with Large Toggle) */}
+            <div className="p-4 rounded-xl border border-slate-800 bg-gradient-to-br from-slate-900 to-slate-950 glass-card space-y-3">
+              <div className="flex justify-between items-center">
                 <div>
-                  <div className="text-xs text-slate-400 uppercase font-bold tracking-wider">
-                    Hero Condition
+                  <div className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                    Focus Shield Mode
                   </div>
                   <div
-                    className={`text-lg font-black mt-0.5 ${
-                      player.isDead
-                        ? "text-rose-400"
-                        : player.hp < 30
+                    className={`text-base font-black mt-0.5 ${
+                      player.hp > 150
+                        ? "text-emerald-400"
+                        : player.hp > 50
                         ? "text-amber-400"
-                        : "text-emerald-400"
+                        : "text-rose-400"
                     }`}
                   >
-                    {player.isDead
-                      ? "💀 DEFEATED (Blocked)"
-                      : player.hp < 30
-                      ? "⚠️ CRITICAL INJURY"
-                      : "⚡ READY FOR QUESTS"}
+                    Filtering Mode: {player.hp > 150 ? "Optimal (100%)" : player.hp > 50 ? "Warning Mode" : "Critical State"}
                   </div>
                 </div>
-                <div className="text-2xl">
-                  {player.isDead ? "🪦" : player.hp < 30 ? "🩹" : "⚔️"}
-                </div>
+
+                {/* Switch Toggle */}
+                <button
+                  onClick={handleToggleFocusMode}
+                  className={`w-12 h-6 rounded-full p-1 transition-all duration-300 ${
+                    player.focusMode ? "bg-emerald-500" : "bg-slate-700"
+                  }`}
+                >
+                  <div
+                    className={`w-4 h-4 rounded-full bg-slate-950 transition-all duration-300 ${
+                      player.focusMode ? "translate-x-6" : "translate-x-0"
+                    }`}
+                  />
+                </button>
               </div>
-              <p className="text-xs text-slate-300 mt-2 leading-relaxed">
-                {player.isDead
-                  ? "Your HP reached 0 due to distracting websites! Go to Training Grounds and beat Speed Math to revive."
-                  : "Productive websites (GitHub, StackOverflow) heal your HP. Distracting sites slowly drain your vital energy!"}
+
+              <p className="text-xs text-slate-300 leading-relaxed">
+                {player.focusMode
+                  ? "Focus Shield is active. Distracting websites drain -50 HP per 30 minutes. If HP hits 0, distracting sites will be hard-blocked!"
+                  : "Passive tracking mode active. Access to educational sites earns +50 HP per 30 mins."}
               </p>
             </div>
 
-            {/* Rules Matrix */}
+            {/* Economy Matrix */}
             <div className="grid grid-cols-2 gap-2">
               <div className="p-3 rounded-xl border border-emerald-500/30 bg-slate-900/60 glass-card">
-                <div className="flex items-center gap-1.5 text-emerald-400 font-bold text-xs">
-                  <span>💚</span> Productive Sites
+                <div className="text-xs font-bold text-emerald-400">
+                  💚 Focus Boost
                 </div>
-                <div className="text-xs text-slate-300 font-medium mt-1">
-                  +1 HP / min
+                <div className="text-xs text-slate-200 mt-1 font-semibold">
+                  +50 HP / 30 mins
                 </div>
                 <div className="text-[10px] text-slate-400 mt-0.5">
-                  GitHub, StackOverflow, Canvas
+                  GitHub, StackOverflow, Docs
                 </div>
               </div>
 
               <div className="p-3 rounded-xl border border-rose-500/30 bg-slate-900/60 glass-card">
-                <div className="flex items-center gap-1.5 text-rose-400 font-bold text-xs">
-                  <span>🔥</span> Distracting Sites
+                <div className="text-xs font-bold text-rose-400">
+                  🔥 Distraction Penalty
                 </div>
-                <div className="text-xs text-slate-300 font-medium mt-1">
-                  -5 HP / min
+                <div className="text-xs text-slate-200 mt-1 font-semibold">
+                  -50 HP / 30 mins
                 </div>
                 <div className="text-[10px] text-slate-400 mt-0.5">
-                  Instagram, Reddit, TikTok
+                  Social Media, Streaming
                 </div>
               </div>
             </div>
-
-            {/* Quick Focus Pomodoro Trigger */}
-            <FocusPomodoroTimer onComplete={() => handleGiveTrainingXp(20)} />
           </section>
         ) : tab === "goals" ? (
           <section className="space-y-3">
-            {/* Quest Header & Add Toggle */}
             <div className="flex justify-between items-center">
               <div>
                 <h2 className="text-sm font-bold text-slate-100 flex items-center gap-1.5">
-                  <span>📜</span> Active Quests
+                  <span>📜</span> Quest Board
                 </h2>
                 <p className="text-[11px] text-slate-400">
-                  Complete goals for +50 Coins & +25 HP
+                  Complete goals for +50 Gold & +50 HP
                 </p>
               </div>
               <button
@@ -504,7 +557,6 @@ export const App: React.FC = () => {
               </button>
             </div>
 
-            {/* Add Goal Modal / Form */}
             {showAddGoal && (
               <form
                 onSubmit={handleAddGoal}
@@ -552,14 +604,13 @@ export const App: React.FC = () => {
                 </div>
                 <button
                   type="submit"
-                  className="w-full py-1.5 text-xs font-bold rounded-lg bg-gradient-to-r from-emerald-500 to-teal-600 text-slate-950 hover:opacity-95 transition-all"
+                  className="w-full py-1.5 text-xs font-bold rounded-lg bg-gradient-to-r from-emerald-500 to-teal-600 text-slate-950"
                 >
                   Confirm Quest
                 </button>
               </form>
             )}
 
-            {/* Goals List */}
             <div className="space-y-2">
               {goals.map((goal) => (
                 <div
@@ -575,7 +626,7 @@ export const App: React.FC = () => {
                       type="checkbox"
                       checked={goal.isCompleted}
                       onChange={() => handleToggleGoal(goal)}
-                      className="mt-1 w-4 h-4 rounded border-slate-700 bg-slate-950 text-emerald-500 focus:ring-emerald-500 accent-emerald-500 cursor-pointer"
+                      className="mt-1 w-4 h-4 rounded border-slate-700 bg-slate-950 text-emerald-500 accent-emerald-500 cursor-pointer"
                     />
                     <div className="flex-1">
                       <div className="flex justify-between items-center">
@@ -588,13 +639,7 @@ export const App: React.FC = () => {
                         >
                           {goal.title}
                         </span>
-                        <span
-                          className={`text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded ${
-                            goal.goalType === "daily"
-                              ? "bg-indigo-950 text-indigo-300 border border-indigo-800/50"
-                              : "bg-purple-950 text-purple-300 border border-purple-800/50"
-                          }`}
-                        >
+                        <span className="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-indigo-950 text-indigo-300 border border-indigo-800/50">
                           {goal.goalType}
                         </span>
                       </div>
@@ -603,16 +648,10 @@ export const App: React.FC = () => {
                           {goal.description}
                         </p>
                       )}
-                      <div className="flex items-center gap-3 mt-2 text-[10px] text-slate-400">
-                        <span className="text-emerald-400 font-semibold">
-                          +25 HP
-                        </span>
-                        <span className="text-amber-400 font-semibold">
-                          +50 Coins
-                        </span>
-                        <span className="text-purple-400 font-semibold">
-                          +20 INT XP
-                        </span>
+                      <div className="flex items-center gap-3 mt-2 text-[10px]">
+                        <span className="text-emerald-400 font-semibold">+50 HP</span>
+                        <span className="text-amber-400 font-semibold">+50 Gold</span>
+                        <span className="text-purple-400 font-semibold">+30 XP</span>
                       </div>
                     </div>
                   </div>
@@ -621,7 +660,7 @@ export const App: React.FC = () => {
             </div>
           </section>
         ) : tab === "training" ? (
-          <TrainingGrounds onGainXp={handleGiveTrainingXp} />
+          <GamesModule player={player} onGainXp={handleGiveTrainingXp} />
         ) : (
           <section className="space-y-3">
             <div className="flex justify-between items-center">
@@ -635,7 +674,7 @@ export const App: React.FC = () => {
               </div>
               <button
                 onClick={loadBounties}
-                className="px-2.5 py-1 text-xs font-bold rounded-lg bg-emerald-600 hover:bg-emerald-500 text-slate-950 transition-all shadow-md"
+                className="px-2.5 py-1 text-xs font-bold rounded-lg bg-emerald-600 text-slate-950"
               >
                 {bountiesLoading ? "Fetching..." : "Refresh"}
               </button>
@@ -647,24 +686,19 @@ export const App: React.FC = () => {
                   key={issue.id}
                   className="p-3 rounded-xl border border-slate-800 bg-slate-900/60 glass-card space-y-1.5"
                 >
-                  <div className="flex justify-between items-start gap-2">
-                    <div className="text-xs font-bold text-slate-100 line-clamp-2 leading-snug">
-                      {issue.title}
-                    </div>
-                    <span className="text-[9px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800/50 shrink-0">
-                      Open Issue
-                    </span>
+                  <div className="text-xs font-bold text-slate-100 line-clamp-2">
+                    {issue.title}
                   </div>
                   <div className="text-[10px] font-mono text-purple-400">
                     📂 {issue.repository_url?.split("/").slice(-2).join("/")}
                   </div>
                   <div className="flex justify-between items-center pt-1 border-t border-slate-800/60">
                     <span className="text-[10px] text-purple-300 font-semibold">
-                      Reward: +5 INT XP
+                      Reward: +10 XP & Gold
                     </span>
                     <button
                       onClick={() => handleViewIssue(issue.html_url)}
-                      className="px-2 py-0.5 text-[11px] font-bold text-emerald-400 hover:text-emerald-300 hover:underline flex items-center gap-1"
+                      className="px-2 py-0.5 text-[11px] font-bold text-emerald-400 hover:underline"
                     >
                       Inspect Quest ➔
                     </button>
@@ -673,7 +707,6 @@ export const App: React.FC = () => {
               ))}
               {!bountiesLoading && bounties.length === 0 && (
                 <div className="text-center py-8 text-xs text-slate-500 space-y-2">
-                  <div className="text-2xl">🎯</div>
                   <p>No bounties loaded yet.</p>
                   <button
                     onClick={loadBounties}
@@ -687,126 +720,149 @@ export const App: React.FC = () => {
           </section>
         )}
       </main>
+
+      {/* Firebase Cloud Sync Drawer Modal */}
+      {showAuthModal && (
+        <div className="absolute inset-0 bg-slate-950/90 backdrop-blur-md z-50 flex items-center justify-center p-4">
+          <div className="w-full bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3 glass-card">
+            <div className="flex justify-between items-center">
+              <h3 className="text-sm font-bold text-emerald-400">
+                ☁️ Firebase Cloud Sync
+              </h3>
+              <button
+                onClick={() => setShowAuthModal(false)}
+                className="text-xs text-slate-400 hover:text-slate-200"
+              >
+                ✕
+              </button>
+            </div>
+            {currentUser ? (
+              <div className="space-y-3">
+                <p className="text-xs text-slate-300">
+                  Signed in as <strong>{currentUser.email}</strong>
+                </p>
+                <button
+                  onClick={async () => {
+                    await signOut(auth);
+                    setCurrentUser(null);
+                    triggerToast("Signed out of Firebase");
+                  }}
+                  className="w-full py-1.5 text-xs font-bold rounded-lg bg-rose-600 text-slate-50"
+                >
+                  Sign Out
+                </button>
+              </div>
+            ) : (
+              <form onSubmit={handleAuthSubmit} className="space-y-2.5">
+                <input
+                  type="email"
+                  placeholder="Email address"
+                  value={authEmail}
+                  onChange={(e) => setAuthEmail(e.target.value)}
+                  className="w-full px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-emerald-500"
+                  required
+                />
+                <input
+                  type="password"
+                  placeholder="Password"
+                  value={authPassword}
+                  onChange={(e) => setAuthPassword(e.target.value)}
+                  className="w-full px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-emerald-500"
+                  required
+                />
+                {authError && (
+                  <div className="text-[11px] text-rose-400">{authError}</div>
+                )}
+                <button
+                  type="submit"
+                  className="w-full py-1.5 text-xs font-bold rounded-lg bg-emerald-600 hover:bg-emerald-500 text-slate-950"
+                >
+                  {authMode === "signin" ? "Sign In" : "Create Account"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setAuthMode(authMode === "signin" ? "signup" : "signin")
+                  }
+                  className="w-full text-center text-[11px] text-slate-400 hover:underline"
+                >
+                  {authMode === "signin"
+                    ? "Need an account? Sign Up"
+                    : "Have an account? Sign In"}
+                </button>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 };
 
-/* Pomodoro Focus Timer Component */
-const FocusPomodoroTimer: React.FC<{ onComplete: () => void }> = ({
-  onComplete,
-}) => {
-  const [seconds, setSeconds] = useState(25 * 60);
-  const [isActive, setIsActive] = useState(false);
-
-  useEffect(() => {
-    let interval: any = null;
-    if (isActive && seconds > 0) {
-      interval = setInterval(() => setSeconds((s) => s - 1), 1000);
-    } else if (seconds === 0 && isActive) {
-      setIsActive(false);
-      onComplete();
-      setSeconds(25 * 60);
-    }
-    return () => clearInterval(interval);
-  }, [isActive, seconds, onComplete]);
-
-  const mins = Math.floor(seconds / 60);
-  const secs = seconds % 60;
-  const timeStr = `${String(mins).padStart(2, "0")}:${String(secs).padStart(
-    2,
-    "0"
-  )}`;
-
-  return (
-    <div className="p-3.5 rounded-xl border border-purple-500/30 bg-slate-900/60 glass-card space-y-2">
-      <div className="flex justify-between items-center">
-        <div className="text-xs font-bold text-purple-300 flex items-center gap-1.5">
-          <span>⏱️</span> Pomodoro Focus Chamber
-        </div>
-        <span className="text-[10px] text-purple-400 font-mono">+20 INT XP</span>
-      </div>
-      <div className="flex items-center justify-between">
-        <div className="text-2xl font-black font-mono text-gradient-purple">
-          {timeStr}
-        </div>
-        <div className="flex items-center gap-1.5">
-          <button
-            onClick={() => setIsActive(!isActive)}
-            className={`px-3 py-1 rounded-lg text-xs font-bold transition-all shadow-md ${
-              isActive
-                ? "bg-rose-600 hover:bg-rose-500 text-slate-50"
-                : "bg-gradient-to-r from-purple-600 to-indigo-600 hover:opacity-90 text-slate-50"
-            }`}
-          >
-            {isActive ? "Pause" : "Start Focus"}
-          </button>
-          <button
-            onClick={() => {
-              setIsActive(false);
-              setSeconds(25 * 60);
-            }}
-            className="px-2 py-1 rounded-lg text-xs font-medium text-slate-400 hover:text-slate-200 border border-slate-800"
-          >
-            Reset
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-/* Training Grounds Sub-Component */
-type TrainingProps = {
+/* Games Module Component */
+const GamesModule: React.FC<{
+  player: PlayerState;
   onGainXp: (amount: number) => void;
-};
+}> = ({ player, onGainXp }) => {
+  const [gameMode, setGameMode] = useState<"menu" | "sliding" | "math">("menu");
+  const isUnlocked = player.hp > 50 || player.isDead;
 
-const TrainingGrounds: React.FC<TrainingProps> = ({ onGainXp }) => {
-  const [mode, setMode] = useState<"menu" | "memory" | "speed">("menu");
+  if (!isUnlocked) {
+    return (
+      <div className="p-4 rounded-xl border border-amber-500/30 bg-slate-900/60 glass-card text-center space-y-2">
+        <div className="text-2xl">🔒</div>
+        <div className="text-xs font-bold text-amber-400">
+          Logic Games Locked
+        </div>
+        <p className="text-[11px] text-slate-400 leading-relaxed">
+          Logic puzzles unlock when HP &gt; 50 to prevent gaming distraction.
+        </p>
+      </div>
+    );
+  }
 
-  if (mode === "menu") {
+  if (gameMode === "menu") {
     return (
       <section className="space-y-3">
         <div>
           <h2 className="text-sm font-bold text-slate-100 flex items-center gap-1.5">
-            <span>⚔️</span> Training Grounds
+            <span>🧩</span> Algorithmic Logic Games
           </h2>
           <p className="text-[11px] text-slate-400">
-            Train your intellect & resurrect your hero from defeat
+            Reinforce working memory & graph thinking for XP
           </p>
         </div>
 
         <div className="space-y-2">
           <button
-            className="w-full text-left p-3 rounded-xl border border-slate-800 bg-slate-900/60 hover:border-emerald-500/50 glass-card space-y-1 transition-all group"
-            onClick={() => setMode("memory")}
+            onClick={() => setGameMode("sliding")}
+            className="w-full text-left p-3 rounded-xl border border-slate-800 bg-slate-900/60 hover:border-emerald-500/50 glass-card space-y-1 group"
           >
             <div className="flex justify-between items-center">
               <span className="text-xs font-bold text-slate-100 group-hover:text-emerald-400">
-                🧩 Elemental Memory Match
+                15-Puzzle Sliding Tiles
               </span>
-              <span className="text-[10px] font-bold text-emerald-400">
-                +15 INT XP
-              </span>
+              <span className="text-[10px] font-bold text-emerald-400">+20 XP</span>
             </div>
             <p className="text-[11px] text-slate-400">
-              Flip and match elemental rune pairs to sharpen focus.
+              Arrange numbered tiles sequentially to train spatial planning.
             </p>
           </button>
 
           <button
-            className="w-full text-left p-3 rounded-xl border border-slate-800 bg-slate-900/60 hover:border-emerald-500/50 glass-card space-y-1 transition-all group"
-            onClick={() => setMode("speed")}
+            onClick={() => setGameMode("math")}
+            className="w-full text-left p-3 rounded-xl border border-slate-800 bg-slate-900/60 hover:border-emerald-500/50 glass-card space-y-1 group"
           >
             <div className="flex justify-between items-center">
               <span className="text-xs font-bold text-slate-100 group-hover:text-emerald-400">
-                ⚡ Speed Math (Redemption Game)
+                Speed Math Redemption
               </span>
               <span className="text-[10px] font-bold text-amber-400">
-                Revive + 15 INT XP
+                Resurrect +20 XP
               </span>
             </div>
             <p className="text-[11px] text-slate-400">
-              Solve rapid arithmetic equations. Revives hero if defeated!
+              Solve rapid math equations. Resurrects hero when HP = 0!
             </p>
           </button>
         </div>
@@ -814,190 +870,124 @@ const TrainingGrounds: React.FC<TrainingProps> = ({ onGainXp }) => {
     );
   }
 
-  if (mode === "memory") {
-    return (
-      <MemoryMatch
-        onBack={() => setMode("menu")}
-        onWin={() => onGainXp(15)}
-      />
-    );
+  if (gameMode === "sliding") {
+    return <SlidingPuzzleGame onBack={() => setGameMode("menu")} onWin={() => onGainXp(20)} />;
   }
 
-  return <SpeedMath onBack={() => setMode("menu")} onWin={() => onGainXp(15)} />;
+  return <SpeedMathGame onBack={() => setGameMode("menu")} onWin={() => onGainXp(20)} />;
 };
 
-type GameProps = {
-  onBack: () => void;
-  onWin: () => void;
-};
+/* 15-Puzzle Sliding Tiles Component */
+const SlidingPuzzleGame: React.FC<{ onBack: () => void; onWin: () => void }> = ({
+  onBack,
+  onWin,
+}) => {
+  const [board, setBoard] = useState<number[]>([1, 2, 3, 4, 5, 6, 7, 8, 0]);
 
-const MemoryMatch: React.FC<GameProps> = ({ onBack, onWin }) => {
-  const symbols = ["🔥", "💧", "🌱", "⚡", "🛡️", "🔮"];
-  const [cards, setCards] = useState(() =>
-    [...symbols, ...symbols]
-      .map((s, i) => ({ id: i, symbol: s, matched: false }))
-      .sort(() => Math.random() - 0.5)
-  );
-  const [flipped, setFlipped] = useState<number[]>([]);
-  const [lock, setLock] = useState(false);
+  const moveTile = (index: number) => {
+    const zeroIndex = board.indexOf(0);
+    const validMoves = [
+      zeroIndex - 1,
+      zeroIndex + 1,
+      zeroIndex - 3,
+      zeroIndex + 3,
+    ];
 
-  useEffect(() => {
-    if (cards.length > 0 && cards.every((c) => c.matched)) {
-      onWin();
-    }
-  }, [cards, onWin]);
+    if (validMoves.includes(index)) {
+      const next = [...board];
+      next[zeroIndex] = next[index];
+      next[index] = 0;
+      setBoard(next);
 
-  const handleFlip = (id: number) => {
-    if (lock) return;
-    const index = cards.findIndex((c) => c.id === id);
-    if (index === -1 || cards[index].matched) return;
-    if (flipped.includes(index)) return;
-
-    const nextFlipped = [...flipped, index];
-    setFlipped(nextFlipped);
-
-    if (nextFlipped.length === 2) {
-      const [a, b] = nextFlipped;
-      setLock(true);
-      setTimeout(() => {
-        setLock(false);
-        if (cards[a].symbol === cards[b].symbol) {
-          setCards((prev) =>
-            prev.map((c, idx) =>
-              idx === a || idx === b ? { ...c, matched: true } : c
-            )
-          );
-        }
-        setFlipped([]);
-      }, 500);
+      if (next.join("") === "123456780") {
+        onWin();
+      }
     }
   };
 
   return (
     <section className="space-y-3">
       <div className="flex justify-between items-center">
-        <h2 className="text-sm font-bold text-slate-100 flex items-center gap-1.5">
-          <span>🧩</span> Elemental Memory Match
-        </h2>
-        <button
-          className="text-xs text-emerald-400 font-semibold hover:underline"
-          onClick={onBack}
-        >
+        <h2 className="text-sm font-bold text-slate-100">15-Puzzle Sliding Tiles</h2>
+        <button onClick={onBack} className="text-xs text-emerald-400 hover:underline">
           ← Back
         </button>
       </div>
 
-      <div className="grid grid-cols-4 gap-2">
-        {cards.map((card, index) => {
-          const isFaceUp = card.matched || flipped.includes(index);
-          return (
-            <button
-              key={card.id}
-              className={`h-14 rounded-xl text-xl flex items-center justify-center border transition-all duration-300 ${
-                card.matched
-                  ? "bg-emerald-950/80 border-emerald-500 text-emerald-300 glow-emerald scale-95"
-                  : isFaceUp
-                  ? "bg-slate-800 border-slate-600 text-slate-100"
-                  : "bg-slate-900 border-slate-800 hover:border-emerald-500/50"
-              }`}
-              onClick={() => handleFlip(card.id)}
-            >
-              {isFaceUp ? card.symbol : "❓"}
-            </button>
-          );
-        })}
+      <div className="grid grid-cols-3 gap-2 w-48 mx-auto py-2">
+        {board.map((val, idx) => (
+          <button
+            key={idx}
+            onClick={() => moveTile(idx)}
+            className={`h-14 rounded-xl text-lg font-bold flex items-center justify-center border transition-all ${
+              val === 0
+                ? "bg-slate-950 border-slate-900 cursor-default"
+                : "bg-slate-900 border-slate-700 text-emerald-300 hover:border-emerald-500"
+            }`}
+          >
+            {val !== 0 ? val : ""}
+          </button>
+        ))}
       </div>
     </section>
   );
 };
 
-const SpeedMath: React.FC<GameProps> = ({ onBack, onWin }) => {
-  const [a, setA] = useState(4);
-  const [b, setB] = useState(7);
-  const [answer, setAnswer] = useState("");
-  const [message, setMessage] = useState<string | null>(null);
-
-  const newProblem = () => {
-    const na = Math.floor(Math.random() * 15) + 3;
-    const nb = Math.floor(Math.random() * 15) + 3;
-    setA(na);
-    setB(nb);
-    setAnswer("");
-    setMessage(null);
-  };
-
-  useEffect(() => {
-    newProblem();
-  }, []);
+/* Speed Math Component */
+const SpeedMathGame: React.FC<{ onBack: () => void; onWin: () => void }> = ({
+  onBack,
+  onWin,
+}) => {
+  const [a, setA] = useState(8);
+  const [b, setB] = useState(9);
+  const [ans, setAns] = useState("");
+  const [msg, setMsg] = useState<string | null>(null);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const expected = a + b;
-    if (Number(answer) === expected) {
-      setMessage("🎉 Correct! Hero Empowered (+15 INT XP)");
+    if (Number(ans) === a + b) {
+      setMsg("🎉 Correct! Hero Empowered (+20 XP)");
       onWin();
-      newProblem();
+      setA(Math.floor(Math.random() * 15) + 5);
+      setB(Math.floor(Math.random() * 15) + 5);
+      setAns("");
     } else {
-      setMessage("❌ Incorrect! Try again.");
+      setMsg("❌ Try again.");
     }
   };
 
   return (
     <section className="space-y-3">
       <div className="flex justify-between items-center">
-        <h2 className="text-sm font-bold text-slate-100 flex items-center gap-1.5">
-          <span>⚡</span> Speed Math Challenge
-        </h2>
-        <button
-          className="text-xs text-emerald-400 font-semibold hover:underline"
-          onClick={onBack}
-        >
+        <h2 className="text-sm font-bold text-slate-100">Speed Math</h2>
+        <button onClick={onBack} className="text-xs text-emerald-400 hover:underline">
           ← Back
         </button>
       </div>
 
-      <div className="p-3.5 rounded-xl border border-slate-800 bg-slate-900/60 glass-card space-y-3">
-        <p className="text-xs text-slate-300 leading-relaxed">
-          Solve quick math problems to earn Intellect XP. If your hero is
-          defeated, solving one will resurrect you to 30 HP!
-        </p>
-
-        <form onSubmit={handleSubmit} className="space-y-3">
-          <div className="flex items-center justify-center gap-2 py-3 bg-slate-950 rounded-xl border border-slate-800 font-mono text-xl font-bold">
-            <span className="text-emerald-400">{a}</span>
-            <span className="text-slate-400">+</span>
-            <span className="text-purple-400">{b}</span>
-            <span className="text-slate-400">=</span>
-            <input
-              type="number"
-              value={answer}
-              onChange={(e) => setAnswer(e.target.value)}
-              className="w-20 px-2 py-1 rounded-lg bg-slate-900 border border-slate-700 text-center text-emerald-300 text-lg font-bold focus:outline-none focus:border-emerald-500"
-              autoFocus
-              required
-            />
-          </div>
-
-          <button
-            type="submit"
-            className="w-full py-2 text-xs font-bold rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 text-slate-950 hover:opacity-95 transition-all shadow-md"
-          >
-            Submit Answer
-          </button>
-        </form>
-
-        {message && (
-          <div
-            className={`text-xs font-bold text-center p-2 rounded-lg ${
-              message.includes("Correct")
-                ? "bg-emerald-950 text-emerald-300 border border-emerald-800"
-                : "bg-rose-950 text-rose-300 border border-rose-800"
-            }`}
-          >
-            {message}
-          </div>
-        )}
-      </div>
+      <form onSubmit={handleSubmit} className="p-3.5 rounded-xl border border-slate-800 bg-slate-900/60 glass-card space-y-3">
+        <div className="flex items-center justify-center gap-2 py-3 bg-slate-950 rounded-xl border border-slate-800 font-mono text-xl font-bold">
+          <span className="text-emerald-400">{a}</span>
+          <span className="text-slate-400">+</span>
+          <span className="text-purple-400">{b}</span>
+          <span className="text-slate-400">=</span>
+          <input
+            type="number"
+            value={ans}
+            onChange={(e) => setAns(e.target.value)}
+            className="w-20 px-2 py-1 rounded-lg bg-slate-900 border border-slate-700 text-center text-emerald-300 text-lg font-bold focus:outline-none focus:border-emerald-500"
+            autoFocus
+            required
+          />
+        </div>
+        <button
+          type="submit"
+          className="w-full py-2 text-xs font-bold rounded-xl bg-emerald-600 hover:bg-emerald-500 text-slate-950"
+        >
+          Submit Answer
+        </button>
+        {msg && <div className="text-xs font-bold text-center text-emerald-400">{msg}</div>}
+      </form>
     </section>
   );
 };

@@ -1,6 +1,8 @@
 // Shared game rules for Focus Quest
 // This file will be imported by both the Chrome extension and mobile app.
 
+export * from "./mechanics";
+
 export type SiteCategory = "productive" | "distracting";
 
 export const WHITELISTED_SITES: string[] = [
