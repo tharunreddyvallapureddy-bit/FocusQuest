@@ -22,12 +22,13 @@ import {
 } from "firebase/firestore";
 
 const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "AIzaSy_YOUR_FIREBASE_API_KEY",
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "focusquest-project.firebaseapp.com",
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || "focusquest-project",
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || "focusquest-project.appspot.com",
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "1234567890",
-  appId: import.meta.env.VITE_FIREBASE_APP_ID || "1:1234567890:web:abcdef123456",
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "AIzaSyBsL-59WgNG9uiqVYnF1wRfBD0hXqQhcs8",
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "focus-quest-3c87c.firebaseapp.com",
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || "focus-quest-3c87c",
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || "focus-quest-3c87c.firebasestorage.app",
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "942832286654",
+  appId: import.meta.env.VITE_FIREBASE_APP_ID || "1:942832286654:web:d4b7b441478b33c018d7ef",
+  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID || "G-5X4B07PR47",
 };
 
 // Initialize Firebase App singleton
