@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Focus Quest",
+  "version": "0.0.1",
+  "description": "Gamified digital wellbeing: turn your browsing into an RPG.",
+  "permissions": ["storage", "tabs", "activeTab", "alarms"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "index.html",
+    "default_title": "Focus Quest"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["blocker.js"],
+      "run_at": "document_start"
+    }
+  ]
+}
+
