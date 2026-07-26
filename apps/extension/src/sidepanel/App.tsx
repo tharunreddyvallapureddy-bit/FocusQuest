@@ -210,8 +210,8 @@ export const App: React.FC = () => {
     persistGoals(updatedGoals);
 
     const rewardHp = 50;
-    const rewardCoins = 50;
-    const rewardXp = 30;
+    const rewardCoins = 500;
+    const rewardXp = 50;
 
     const newXp = player.intellectXp + rewardXp;
     const next: PlayerState = {
@@ -546,7 +546,7 @@ export const App: React.FC = () => {
                   <span>📜</span> Quest Board
                 </h2>
                 <p className="text-[11px] text-slate-400">
-                  Complete goals for +50 Gold & +50 HP
+                  Complete goals for +500 Gold & +50 HP
                 </p>
               </div>
               <button
@@ -650,7 +650,7 @@ export const App: React.FC = () => {
                       )}
                       <div className="flex items-center gap-3 mt-2 text-[10px]">
                         <span className="text-emerald-400 font-semibold">+50 HP</span>
-                        <span className="text-amber-400 font-semibold">+50 Gold</span>
+                        <span className="text-amber-400 font-semibold">+500 Gold</span>
                         <span className="text-purple-400 font-semibold">+30 XP</span>
                       </div>
                     </div>
