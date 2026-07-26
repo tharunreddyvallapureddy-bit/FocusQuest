@@ -99,6 +99,9 @@ export const App: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [authMode, setAuthMode] = useState<"signin" | "signup">("signin");
+  const [authName, setAuthName] = useState("");
+  const [authMobile, setAuthMobile] = useState("");
+  const [authUpiId, setAuthUpiId] = useState("6281752093@upi");
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
   const [authError, setAuthError] = useState<string | null>(null);
@@ -338,13 +341,41 @@ export const App: React.FC = () => {
     e.preventDefault();
     setAuthError(null);
     try {
+      let userCred;
       if (authMode === "signup") {
-        await createUserWithEmailAndPassword(auth, authEmail, authPassword);
+        userCred = await createUserWithEmailAndPassword(auth, authEmail, authPassword);
+        if (userCred.user) {
+          const nextPlayer: PlayerState = {
+            ...player,
+            name: authName || player.name || "Student Adventurer",
+            mobileNumber: authMobile || player.mobileNumber || "6281752093",
+            upiId: authUpiId || player.upiId || "6281752093@upi",
+          };
+          await persistPlayer(nextPlayer);
+        }
       } else {
-        await signInWithEmailAndPassword(auth, authEmail, authPassword);
+        userCred = await signInWithEmailAndPassword(auth, authEmail, authPassword);
+        if (userCred.user) {
+          const cloudProfile = await loadProfileFromFirestore(userCred.user.uid);
+          if (cloudProfile) {
+            const restoredPlayer: PlayerState = {
+              hp: cloudProfile.hp ?? 300,
+              maxHp: cloudProfile.maxHp ?? 300,
+              coins: cloudProfile.gold ?? 100,
+              intellectXp: cloudProfile.xp ?? 0,
+              isDead: cloudProfile.isDead ?? false,
+              avatarSeed: cloudProfile.avatarSeed ?? "AdventurerHero",
+              focusMode: true,
+              name: cloudProfile.name || authName || "Student Adventurer",
+              mobileNumber: cloudProfile.mobileNumber || authMobile || "6281752093",
+              upiId: cloudProfile.upiId || authUpiId || "6281752093@upi",
+            };
+            await persistPlayer(restoredPlayer);
+          }
+        }
       }
       setShowAuthModal(false);
-      triggerToast("🔥 Connected to Firebase Cloud!");
+      triggerToast("🔥 Account Signed In & Profile Synced!");
     } catch (err: any) {
       setAuthError(err.message || "Auth failed");
     }
@@ -867,7 +898,35 @@ export const App: React.FC = () => {
                 </button>
               </div>
             ) : (
-              <form onSubmit={handleAuthSubmit} className="space-y-2.5">
+              <form onSubmit={handleAuthSubmit} className="space-y-2">
+                {authMode === "signup" && (
+                  <>
+                    <input
+                      type="text"
+                      placeholder="Full Name (e.g. Tharun Reddy)"
+                      value={authName}
+                      onChange={(e) => setAuthName(e.target.value)}
+                      className="w-full px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-emerald-500"
+                      required
+                    />
+                    <input
+                      type="tel"
+                      placeholder="Mobile Number (e.g. 6281752093)"
+                      value={authMobile}
+                      onChange={(e) => setAuthMobile(e.target.value)}
+                      className="w-full px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-emerald-500"
+                      required
+                    />
+                    <input
+                      type="text"
+                      placeholder="UPI ID / Scanner Target (e.g. 6281752093@upi)"
+                      value={authUpiId}
+                      onChange={(e) => setAuthUpiId(e.target.value)}
+                      className="w-full px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-emerald-500 font-mono"
+                      required
+                    />
+                  </>
+                )}
                 <input
                   type="email"
                   placeholder="Email address"
@@ -885,21 +944,24 @@ export const App: React.FC = () => {
                   required
                 />
                 {authError && (
-                  <div className="text-[11px] text-rose-400">{authError}</div>
+                  <div className="text-[11px] text-rose-400 font-medium">{authError}</div>
                 )}
                 <button
                   type="submit"
-                  className="w-full py-1.5 text-xs font-bold rounded-lg bg-emerald-600 hover:bg-emerald-500 text-slate-950"
+                  className="w-full py-1.5 text-xs font-bold rounded-lg bg-emerald-600 hover:bg-emerald-500 text-slate-950 cursor-pointer"
                 >
-                  {authMode === "signin" ? "Sign In" : "Create Account"}
+                  {authMode === "signin" ? "Sign In" : "Create Account & Sync Profile"}
                 </button>
                 <button
                   type="button"
                   onClick={() =>
                     setAuthMode(authMode === "signin" ? "signup" : "signin")
                   }
-                  className="w-full text-center text-[11px] text-slate-400 hover:underline"
+                  className="w-full text-center text-[11px] text-slate-400 hover:underline cursor-pointer"
                 >
+                  {authMode === "signin"
+                    ? "Need an account? Sign Up with Name, Phone & UPI ID"
+                    : "Have an account? Sign In"}
                 </button>
               </form>
             )}

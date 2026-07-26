@@ -154,7 +154,7 @@ function injectShadowOverlay() {
 
   formEl?.addEventListener("submit", (e) => {
     e.preventDefault();
-    const val = Number((ansEl as HTMLInputElement).value);
+    const val = Number(ansEl ? ansEl.value : 0);
     if (val === a + b) {
       if (msgEl) {
         msgEl.textContent = "🎉 Correct! Hero Resurrected!";
@@ -179,7 +179,7 @@ function injectShadowOverlay() {
       a = Math.floor(Math.random() * 12) + 3;
       b = Math.floor(Math.random() * 12) + 3;
       if (eqEl) eqEl.textContent = `${a} + ${b} = ?`;
-      if (ansEl) (ansEl as HTMLInputElement).value = "";
+      if (ansEl) ansEl.value = "";
     }
   });
 }

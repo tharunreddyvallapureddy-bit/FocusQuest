@@ -44,6 +44,9 @@ export type { User };
 export async function syncProfileToFirestore(
   userId: string,
   profile: {
+    name?: string;
+    mobileNumber?: string;
+    upiId?: string;
     username?: string;
     avatarSeed?: string;
     xp: number;
