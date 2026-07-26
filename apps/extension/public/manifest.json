@@ -3,7 +3,7 @@
   "name": "Focus Quest",
   "version": "0.0.1",
   "description": "Gamified digital wellbeing: turn your browsing into an RPG.",
-  "permissions": ["storage", "tabs", "activeTab", "alarms", "idle", "declarativeNetRequest"],
+  "permissions": ["storage", "tabs", "activeTab", "alarms", "idle", "declarativeNetRequest", "notifications"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js",

@@ -23,7 +23,10 @@ type Goal = {
   title: string;
   description?: string;
   goalType: "daily" | "weekly";
+  targetMinutes?: number;
+  progressMinutes?: number;
   isCompleted: boolean;
+  autoVerified?: boolean;
 };
 
 type PlayerState = {
@@ -52,21 +55,30 @@ const DEFAULT_GOALS: Goal[] = [
     title: "Deep Work: React & TypeScript",
     description: "Build or study focused for 120 minutes.",
     goalType: "daily",
+    targetMinutes: 120,
+    progressMinutes: 0,
     isCompleted: false,
+    autoVerified: false,
   },
   {
     id: "algo-30m",
     title: "Algorithm Mastery: Solve 3 Problems",
     description: "Practice on LeetCode, HackerRank or Codeforces.",
     goalType: "daily",
+    targetMinutes: 30,
+    progressMinutes: 0,
     isCompleted: false,
+    autoVerified: false,
   },
   {
     id: "clean-code-weekly",
     title: "Weekly Quest: Ship a Full Feature",
     description: "Complete a full module refactor or new feature.",
     goalType: "weekly",
+    targetMinutes: 300,
+    progressMinutes: 0,
     isCompleted: false,
+    autoVerified: false,
   },
 ];
 
@@ -612,51 +624,83 @@ export const App: React.FC = () => {
             )}
 
             <div className="space-y-2">
-              {goals.map((goal) => (
-                <div
-                  key={goal.id}
-                  className={`p-3 rounded-xl border transition-all glass-card ${
-                    goal.isCompleted
-                      ? "border-slate-800/60 bg-slate-950/40 opacity-70"
-                      : "border-slate-800 bg-slate-900/70 hover:border-emerald-500/50"
-                  }`}
-                >
-                  <div className="flex items-start gap-2.5">
-                    <input
-                      type="checkbox"
-                      checked={goal.isCompleted}
-                      onChange={() => handleToggleGoal(goal)}
-                      className="mt-1 w-4 h-4 rounded border-slate-700 bg-slate-950 text-emerald-500 accent-emerald-500 cursor-pointer"
-                    />
-                    <div className="flex-1">
-                      <div className="flex justify-between items-center">
-                        <span
-                          className={`text-xs font-bold ${
-                            goal.isCompleted
-                              ? "line-through text-slate-500"
-                              : "text-slate-100"
-                          }`}
-                        >
-                          {goal.title}
-                        </span>
-                        <span className="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-indigo-950 text-indigo-300 border border-indigo-800/50">
-                          {goal.goalType}
-                        </span>
-                      </div>
-                      {goal.description && (
-                        <p className="text-[11px] text-slate-400 mt-1">
-                          {goal.description}
-                        </p>
-                      )}
-                      <div className="flex items-center gap-3 mt-2 text-[10px]">
-                        <span className="text-emerald-400 font-semibold">+50 HP</span>
-                        <span className="text-amber-400 font-semibold">+500 Gold</span>
-                        <span className="text-purple-400 font-semibold">+30 XP</span>
+              {goals.map((goal) => {
+                const target = goal.targetMinutes || 30;
+                const progress = goal.progressMinutes || 0;
+                const percent = Math.min(100, Math.round((progress / target) * 100));
+
+                return (
+                  <div
+                    key={goal.id}
+                    className={`p-3 rounded-xl border transition-all glass-card ${
+                      goal.isCompleted
+                        ? "border-emerald-500/40 bg-emerald-950/20"
+                        : "border-slate-800 bg-slate-900/70 hover:border-emerald-500/50"
+                    }`}
+                  >
+                    <div className="flex items-start gap-2.5">
+                      <input
+                        type="checkbox"
+                        checked={goal.isCompleted}
+                        onChange={() => handleToggleGoal(goal)}
+                        className="mt-1 w-4 h-4 rounded border-slate-700 bg-slate-950 text-emerald-500 accent-emerald-500 cursor-pointer"
+                      />
+                      <div className="flex-1">
+                        <div className="flex justify-between items-center">
+                          <span
+                            className={`text-xs font-bold ${
+                              goal.isCompleted
+                                ? "line-through text-emerald-300"
+                                : "text-slate-100"
+                            }`}
+                          >
+                            {goal.title}
+                          </span>
+                          <div className="flex items-center gap-1">
+                            {goal.autoVerified && (
+                              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800/60 shadow-sm">
+                                🛡️ Auto-Verified
+                              </span>
+                            )}
+                            <span className="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-indigo-950 text-indigo-300 border border-indigo-800/50">
+                              {goal.goalType}
+                            </span>
+                          </div>
+                        </div>
+                        {goal.description && (
+                          <p className="text-[11px] text-slate-400 mt-1">
+                            {goal.description}
+                          </p>
+                        )}
+
+                        {/* Verified Study Progress Bar */}
+                        <div className="mt-2 space-y-1">
+                          <div className="flex justify-between text-[10px]">
+                            <span className="text-slate-400 font-medium">
+                              Background Study Verification
+                            </span>
+                            <span className="font-mono text-emerald-400 font-bold">
+                              {progress} / {target} mins ({percent}%)
+                            </span>
+                          </div>
+                          <div className="h-1.5 rounded-full bg-slate-950 overflow-hidden border border-slate-800/80">
+                            <div
+                              className="h-full bg-gradient-to-r from-emerald-500 to-teal-400 transition-all duration-500"
+                              style={{ width: `${percent}%` }}
+                            />
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-3 mt-2 text-[10px]">
+                          <span className="text-emerald-400 font-semibold">+50 HP</span>
+                          <span className="text-amber-400 font-semibold">+500 Gold</span>
+                          <span className="text-purple-400 font-semibold">+50 XP</span>
+                        </div>
                       </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </section>
         ) : tab === "training" ? (
