@@ -1,171 +1,227 @@
-// Focus Quest - Content Script Blocker
-// When HP hits 0 (playerState.isDead = true), show a full-screen
-// "YOU DIED" overlay and require the user to beat a small
-// Speed Math game to revive (HP = 20) and remove the block.
+// Focus Quest - Real-time Background Distraction Blocker & Redemption Engine
+// Features: Shadow DOM isolated full-screen overlay when HP <= 0 on distracting sites.
 
-function injectOverlay() {
-  if (document.getElementById("focus-quest-overlay")) return;
+function injectShadowOverlay() {
+  if (document.getElementById("focus-quest-shadow-root")) return;
+
+  const container = document.createElement("div");
+  container.id = "focus-quest-shadow-root";
+  container.style.position = "fixed";
+  container.style.inset = "0";
+  container.style.zIndex = "2147483647"; // Maximum possible z-index
+
+  const shadow = container.attachShadow({ mode: "closed" });
+
+  const style = document.createElement("style");
+  style.textContent = `
+    .overlay {
+      position: fixed;
+      inset: 0;
+      background: linear-gradient(135deg, #020617 0%, #0f172a 50%, #1e1b4b 100%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: #f8fafc;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      padding: 1rem;
+    }
+    .panel {
+      background: rgba(15, 23, 42, 0.95);
+      border: 1px solid rgba(244, 63, 94, 0.4);
+      box-shadow: 0 0 30px rgba(244, 63, 94, 0.25);
+      border-radius: 1rem;
+      padding: 2rem;
+      max-width: 360px;
+      width: 100%;
+      text-align: center;
+      backdrop-filter: blur(12px);
+    }
+    .skull {
+      font-size: 3rem;
+      margin-bottom: 0.5rem;
+      animation: pulse 2s infinite ease-in-out;
+    }
+    @keyframes pulse {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.1); }
+    }
+    .title {
+      font-size: 1.5rem;
+      font-weight: 900;
+      color: #fb7185;
+      letter-spacing: 0.1em;
+      margin: 0 0 0.5rem 0;
+    }
+    .subtitle {
+      font-size: 0.85rem;
+      color: #94a3b8;
+      margin-bottom: 1.25rem;
+      line-height: 1.4;
+    }
+    .math-box {
+      background: #020617;
+      border: 1px solid #334155;
+      border-radius: 0.75rem;
+      padding: 1rem;
+      margin-bottom: 1rem;
+    }
+    .equation {
+      font-family: monospace;
+      font-size: 1.25rem;
+      font-weight: bold;
+      color: #34d399;
+      margin-bottom: 0.75rem;
+    }
+    .input-row {
+      display: flex;
+      gap: 0.5rem;
+      justify-content: center;
+    }
+    input {
+      width: 80px;
+      padding: 0.4rem;
+      border-radius: 0.5rem;
+      border: 1px solid #475569;
+      background: #0f172a;
+      color: #34d399;
+      font-family: monospace;
+      font-size: 1.1rem;
+      font-weight: bold;
+      text-align: center;
+      outline: none;
+    }
+    input:focus {
+      border-color: #10b981;
+    }
+    button {
+      padding: 0.4rem 1rem;
+      border-radius: 0.5rem;
+      border: none;
+      background: linear-gradient(135deg, #10b981, #059669);
+      color: #020617;
+      font-size: 0.85rem;
+      font-weight: 800;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    button:hover {
+      opacity: 0.9;
+      transform: translateY(-1px);
+    }
+    .msg {
+      font-size: 0.8rem;
+      font-weight: bold;
+      margin-top: 0.5rem;
+      min-height: 1.2rem;
+    }
+  `;
 
   const overlay = document.createElement("div");
-  overlay.id = "focus-quest-overlay";
-  overlay.style.position = "fixed";
-  overlay.style.inset = "0";
-  overlay.style.zIndex = "999999";
-  overlay.style.background = "linear-gradient(135deg,#020617,#0f172a)";
-  overlay.style.display = "flex";
-  overlay.style.flexDirection = "column";
-  overlay.style.alignItems = "center";
-  overlay.style.justifyContent = "center";
-  overlay.style.color = "#e5e7eb";
-  overlay.style.fontFamily =
-    "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+  overlay.className = "overlay";
 
   const panel = document.createElement("div");
-  panel.style.background = "#020617dd";
-  panel.style.border = "1px solid #1f2937";
-  panel.style.borderRadius = "0.75rem";
-  panel.style.padding = "1.5rem";
-  panel.style.minWidth = "260px";
-  panel.style.boxShadow = "0 25px 50px -12px rgba(0,0,0,0.8)";
+  panel.className = "panel";
 
-  const title = document.createElement("h1");
-  title.textContent = "YOU DIED";
-  title.style.fontSize = "1.8rem";
-  title.style.letterSpacing = "0.25em";
-  title.style.textAlign = "center";
-  title.style.marginBottom = "0.75rem";
+  panel.innerHTML = `
+    <div class="skull">💀</div>
+    <h1 class="title">HERO FAINTED</h1>
+    <p class="subtitle">Your HP dropped to 0 due to distraction. Complete the Speed Math challenge to resurrect (+100 HP) and unblock access!</p>
+    <div class="math-box">
+      <div className="equation" id="eq">Solving Math...</div>
+      <form id="math-form" class="input-row">
+        <input type="number" id="ans" required autofocus autocomplete="off" />
+        <button type="submit">Resurrect</button>
+      </form>
+      <div id="msg" class="msg"></div>
+    </div>
+  `;
 
-  const subtitle = document.createElement("p");
-  subtitle.textContent = "Your focus dropped to 0 HP.";
-  subtitle.style.opacity = "0.8";
-  subtitle.style.marginBottom = "1rem";
-  subtitle.style.textAlign = "center";
+  let a = Math.floor(Math.random() * 12) + 3;
+  let b = Math.floor(Math.random() * 12) + 3;
 
-  const instructions = document.createElement("p");
-  instructions.textContent =
-    "Win this Speed Math challenge to revive (HP = 20) and unblock distracting sites.";
-  instructions.style.fontSize = "0.85rem";
-  instructions.style.opacity = "0.8";
-  instructions.style.marginBottom = "1rem";
-  instructions.style.textAlign = "center";
+  shadow.appendChild(style);
+  shadow.appendChild(overlay);
+  overlay.appendChild(panel);
+  document.documentElement.appendChild(container);
 
-  // Simple speed math game: a + b = ?
-  const form = document.createElement("form");
-  form.style.display = "flex";
-  form.style.alignItems = "center";
-  form.style.justifyContent = "center";
-  form.style.gap = "0.5rem";
-  form.style.marginBottom = "0.75rem";
+  const eqEl = shadow.getElementById("eq");
+  const formEl = shadow.getElementById("math-form");
+  const ansEl = shadow.getElementById("ans");
+  const msgEl = shadow.getElementById("msg");
 
-  let a = 2;
-  let b = 2;
+  if (eqEl) eqEl.textContent = `${a} + ${b} = ?`;
 
-  function newProblem() {
-    a = Math.floor(Math.random() * 9) + 1;
-    b = Math.floor(Math.random() * 9) + 1;
-    question.textContent = `${a} + ${b} =`;
-    input.value = "";
-    message.textContent = "";
-  }
-
-  const question = document.createElement("span");
-  question.style.fontFamily = "ui-monospace, SFMono-Regular, Menlo, Monaco";
-  question.style.fontSize = "1.1rem";
-  question.style.minWidth = "80px";
-
-  const input = document.createElement("input");
-  input.type = "number";
-  input.style.width = "70px";
-  input.style.padding = "0.25rem 0.5rem";
-  input.style.borderRadius = "0.375rem";
-  input.style.border = "1px solid #4b5563";
-  input.style.background = "#020617";
-  input.style.color = "#e5e7eb";
-
-  const button = document.createElement("button");
-  button.type = "submit";
-  button.textContent = "Answer";
-  button.style.padding = "0.3rem 0.75rem";
-  button.style.borderRadius = "0.375rem";
-  button.style.border = "none";
-  button.style.background = "#10b981";
-  button.style.color = "#0b1120";
-  button.style.fontSize = "0.8rem";
-  button.style.cursor = "pointer";
-
-  form.appendChild(question);
-  form.appendChild(input);
-  form.appendChild(button);
-
-  const message = document.createElement("div");
-  message.style.fontSize = "0.8rem";
-  message.style.textAlign = "center";
-  message.style.minHeight = "1.2rem";
-
-  form.addEventListener("submit", (e) => {
+  formEl?.addEventListener("submit", (e) => {
     e.preventDefault();
-    const expected = a + b;
-    const val = Number(input.value);
-    if (val === expected) {
-      message.textContent = "Correct! You are revived with 20 HP.";
-      message.style.color = "#6ee7b7";
+    const val = Number((ansEl as HTMLInputElement).value);
+    if (val === a + b) {
+      if (msgEl) {
+        msgEl.textContent = "🎉 Correct! Hero Resurrected!";
+        msgEl.style.color = "#34d399";
+      }
 
       chrome.storage.local.get(["playerState"], (result) => {
-        const player =
-          result.playerState || {
-            hp: 0,
-            maxHp: 100,
-            coins: 0,
-            level: 1,
-            intellectXp: 0,
-            isDead: true,
-          };
-        const revived = { ...player, hp: 20, isDead: false };
+        const player = result.playerState || {};
+        const revived = { ...player, hp: 100, isDead: false };
         chrome.storage.local.set({ playerState: revived }, () => {
           setTimeout(() => {
-            overlay.remove();
+            container.remove();
             window.location.reload();
           }, 600);
         });
       });
     } else {
-      message.textContent = "Not quite. Try another one.";
-      message.style.color = "#fca5a5";
-      newProblem();
-    }
-  });
-
-  newProblem();
-
-  panel.appendChild(title);
-  panel.appendChild(subtitle);
-  panel.appendChild(instructions);
-  panel.appendChild(form);
-  panel.appendChild(message);
-
-  overlay.appendChild(panel);
-  document.body.appendChild(overlay);
-}
-
-function checkBlockState() {
-  chrome.storage.local.get(["playerState"], (result) => {
-    if (chrome.runtime.lastError) return;
-    const player = result.playerState;
-    if (player && player.isDead) {
-      injectOverlay();
+      if (msgEl) {
+        msgEl.textContent = "❌ Incorrect. Try again.";
+        msgEl.style.color = "#fb7185";
+      }
+      a = Math.floor(Math.random() * 12) + 3;
+      b = Math.floor(Math.random() * 12) + 3;
+      if (eqEl) eqEl.textContent = `${a} + ${b} = ?`;
+      if (ansEl) (ansEl as HTMLInputElement).value = "";
     }
   });
 }
 
-// Initial check and observe SPA navigations
-checkBlockState();
+function checkVerificationState() {
+  try {
+    const hostname = window.location.hostname.toLowerCase();
+    chrome.storage.local.get(
+      ["playerState", "blacklist"],
+      ({ playerState, blacklist }) => {
+        if (!playerState) return;
 
-const observer = new MutationObserver(() => {
-  checkBlockState();
-});
+        const defaultBlacklist = [
+          "instagram.com",
+          "tiktok.com",
+          "netflix.com",
+          "reddit.com",
+          "twitter.com",
+          "x.com",
+          "twitch.tv",
+          "facebook.com",
+        ];
 
+        const list = blacklist || defaultBlacklist;
+        const isDistracting = list.some((domain) =>
+          hostname.includes(domain.toLowerCase())
+        );
+
+        if (isDistracting && playerState.isDead && playerState.focusMode) {
+          injectShadowOverlay();
+        }
+      }
+    );
+  } catch (e) {
+    // Ignore context errors
+  }
+}
+
+// Perform verification on initial load & DOM changes
+checkVerificationState();
+const observer = new MutationObserver(() => checkVerificationState());
 observer.observe(document.documentElement || document, {
   childList: true,
   subtree: true,
 });
-

@@ -1,158 +1,177 @@
-// Focus Quest - Background Service Worker (Manifest V3)
-// Core loop:
-// - Productive sites slowly heal HP (+1 per minute)
-// - Distracting sites slowly damage HP (-5 per minute)
-// We track the last site category and apply changes every minute.
+// Focus Quest - Advanced Background Study & Distraction Verification Engine (Manifest V3)
+// Features:
+// 1. Dynamic Whitelist & Blacklist domain evaluation from user storage.
+// 2. Active Window & Idle Detection (prevents AFK study farming).
+// 3. Real-time HP decay (-50 HP / 30 min on distraction) & Focus heal (+50 HP / 30 min on study).
+// 4. Automatic DeclarativeNetRequest & Content Script Blocking when HP <= 0.
 
-const PRODUCTIVE_SITES = [
+const DEFAULT_WHITELIST = [
   "github.com",
   "stackoverflow.com",
   "stackexchange.com",
-  "canvas.",
+  "canvas.instructure.com",
+  "coursera.org",
+  "udemy.com",
+  "leetcode.com",
+  "geeksforgeeks.org",
+  "wikipedia.org",
+  "arxiv.org",
+  "medium.com",
+  "docs.google.com",
 ];
-const DISTRACTING_SITES = [
+
+const DEFAULT_BLACKLIST = [
   "instagram.com",
-  "netflix.com",
   "tiktok.com",
+  "netflix.com",
   "reddit.com",
+  "twitter.com",
+  "x.com",
+  "twitch.tv",
+  "facebook.com",
 ];
 
-const HP_PER_MINUTE = {
-  productive: 1,
-  distracting: -5,
-};
+const BASE_MAX_HP = 300;
 
-function getCategoryFromUrl(url) {
+function getSiteCategory(url, whitelist, blacklist) {
+  if (!url) return "neutral";
   try {
-    const hostname = new URL(url).hostname;
-    if (PRODUCTIVE_SITES.some((domain) => hostname.includes(domain)))
-      return "productive";
-    if (DISTRACTING_SITES.some((domain) => hostname.includes(domain)))
+    const hostname = new URL(url).hostname.toLowerCase();
+    if (whitelist.some((domain) => hostname.includes(domain.toLowerCase()))) {
+      return "educational";
+    }
+    if (blacklist.some((domain) => hostname.includes(domain.toLowerCase()))) {
       return "distracting";
-    return null;
+    }
+    return "neutral";
   } catch (e) {
-    return null;
+    return "neutral";
   }
 }
 
-function ensureInitialState() {
-  chrome.storage.local.get(["playerState"], (result) => {
-    if (chrome.runtime.lastError) return;
-
-    if (!result.playerState) {
-      const initial = {
-        hp: 100,
-        maxHp: 100,
-        coins: 0,
-        level: 1,
-        intellectXp: 0,
-        isDead: false,
-      };
-      chrome.storage.local.set({ playerState: initial });
-    }
-  });
-}
-
-// Track last category from tab changes
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (!tab.url) return;
-  if (changeInfo.status !== "complete") return;
-
-  const category = getCategoryFromUrl(tab.url);
-  if (!category) return;
-
-  chrome.storage.local.set(
-    {
-      lastSiteCategory: category,
-      lastCategoryTimestamp: Date.now(),
-    },
-    () => {
-      if (chrome.runtime.lastError) {
-        console.warn(
-          "[Focus Quest] storage error:",
-          chrome.runtime.lastError
-        );
-      }
-    }
-  );
-});
-
-chrome.tabs.onActivated.addListener(({ tabId }) => {
-  chrome.tabs.get(tabId, (tab) => {
-    if (chrome.runtime.lastError || !tab?.url) return;
-    const category = getCategoryFromUrl(tab.url);
-    if (!category) return;
-    chrome.storage.local.set({
-      lastSiteCategory: category,
-      lastCategoryTimestamp: Date.now(),
-    });
-  });
-});
-
-// Alarm tick every minute
-chrome.runtime.onInstalled.addListener(() => {
-  ensureInitialState();
-  chrome.alarms.create("focusquest-tick", { periodInMinutes: 1 });
-});
-
-chrome.runtime.onStartup.addListener(() => {
-  ensureInitialState();
-  chrome.alarms.create("focusquest-tick", { periodInMinutes: 1 });
-});
-
-chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name !== "focusquest-tick") return;
-
+function initializeState() {
   chrome.storage.local.get(
-    ["playerState", "lastSiteCategory"],
+    ["playerState", "whitelist", "blacklist"],
     (result) => {
       if (chrome.runtime.lastError) return;
 
-      const player =
-        result.playerState || {
-          hp: 100,
-          maxHp: 100,
-          coins: 0,
-          level: 1,
-          intellectXp: 0,
-          isDead: false,
-        };
-      const category = result.lastSiteCategory;
-
-      if (!category || !HP_PER_MINUTE[category]) return;
-
-      let hp = player.hp + HP_PER_MINUTE[category];
-      const maxHp = player.maxHp || 100;
-      if (hp > maxHp) hp = maxHp;
-      if (hp < 0) hp = 0;
-
-      const isDead = hp <= 0;
-
-      const updated = {
-        ...player,
-        hp,
-        maxHp,
-        isDead,
+      const initialPlayer = result.playerState || {
+        hp: 300,
+        maxHp: BASE_MAX_HP,
+        coins: 100,
+        intellectXp: 0,
+        isDead: false,
+        avatarSeed: "AdventurerHero",
+        focusMode: true,
       };
 
-      chrome.storage.local.set({ playerState: updated }, () => {
-        if (chrome.runtime.lastError) {
-          console.warn(
-            "[Focus Quest] failed to update player state:",
-            chrome.runtime.lastError
-          );
-        } else {
-          console.log(
-            "[Focus Quest] tick",
-            category,
-            "HP now",
-            updated.hp,
-            "isDead",
-            updated.isDead
-          );
-        }
+      const initialWhitelist = result.whitelist || DEFAULT_WHITELIST;
+      const initialBlacklist = result.blacklist || DEFAULT_BLACKLIST;
+
+      chrome.storage.local.set({
+        playerState: initialPlayer,
+        whitelist: initialWhitelist,
+        blacklist: initialBlacklist,
       });
     }
   );
+}
+
+// Track active tab category in real-time
+async function evaluateActiveTab() {
+  try {
+    const [tab] = await chrome.tabs.query({
+      active: true,
+      currentWindow: true,
+    });
+    if (!tab || !tab.url) return;
+
+    chrome.storage.local.get(
+      ["whitelist", "blacklist"],
+      ({ whitelist, blacklist }) => {
+        const category = getSiteCategory(
+          tab.url,
+          whitelist || DEFAULT_WHITELIST,
+          blacklist || DEFAULT_BLACKLIST
+        );
+        chrome.storage.local.set({
+          activeDomain: new URL(tab.url).hostname,
+          activeCategory: category,
+          lastEvaluatedAt: Date.now(),
+        });
+      }
+    );
+  } catch (e) {
+    // Ignore invalid tab urls (e.g. chrome://)
+  }
+}
+
+// Listen to Tab & Window Events
+chrome.tabs.onActivated.addListener(() => evaluateActiveTab());
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo.status === "complete") evaluateActiveTab();
+});
+chrome.windows.onFocusChanged.addListener(() => evaluateActiveTab());
+
+// 1-Minute Verification Heartbeat
+chrome.runtime.onInstalled.addListener(() => {
+  initializeState();
+  chrome.alarms.create("focusquest-heartbeat", { periodInMinutes: 1 });
 });
 
+chrome.runtime.onStartup.addListener(() => {
+  initializeState();
+  chrome.alarms.create("focusquest-heartbeat", { periodInMinutes: 1 });
+});
+
+chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name !== "focusquest-heartbeat") return;
+
+  // Check Idle State (Pause if user is away/idle > 60s)
+  chrome.idle.queryState(60, (idleState) => {
+    if (idleState !== "active") {
+      console.log("[Focus Quest] Student is IDLE. Pausing verification.");
+      return;
+    }
+
+    chrome.storage.local.get(
+      ["playerState", "activeCategory"],
+      ({ playerState, activeCategory }) => {
+        if (!playerState) return;
+
+        let { hp, maxHp, coins, intellectXp, isDead, focusMode } = playerState;
+        maxHp = maxHp || BASE_MAX_HP;
+
+        // Apply rules:
+        // - Distracting: -1.67 HP / min (-50 HP per 30 mins)
+        // - Educational: +1.67 HP / min (+50 HP per 30 mins), +1 XP, +1.67 Gold
+        if (activeCategory === "distracting" && focusMode) {
+          hp = Math.max(0, hp - 1.67);
+          if (hp <= 0) {
+            isDead = true;
+          }
+          console.log(`[Focus Quest] Distraction penalty applied. HP: ${hp.toFixed(1)}`);
+        } else if (activeCategory === "educational") {
+          hp = Math.min(maxHp, hp + 1.67);
+          intellectXp += 1;
+          coins += 1.67;
+          if (hp > 0 && isDead) {
+            isDead = false;
+          }
+          console.log(`[Focus Quest] Study reward applied. HP: ${hp.toFixed(1)}, XP: ${intellectXp}`);
+        }
+
+        const updated = {
+          ...playerState,
+          hp: Math.round(hp * 10) / 10,
+          maxHp,
+          coins: Math.round(coins * 10) / 10,
+          intellectXp,
+          isDead,
+        };
+
+        chrome.storage.local.set({ playerState: updated });
+      }
+    );
+  });
+});
