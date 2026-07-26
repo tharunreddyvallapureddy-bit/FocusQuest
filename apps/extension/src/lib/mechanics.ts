@@ -12,10 +12,10 @@ export function calculateLevel(xp: number): number {
 }
 
 /**
- * Calculates HP loss based on distraction time (-50 HP per 30 minutes / 1800s)
+ * Calculates HP loss based on distraction time (-50 HP per 5 minutes / 300s)
  */
 export function calculateHpDecay(distractionSeconds: number): number {
-  const intervals = Math.floor(distractionSeconds / 1800);
+  const intervals = Math.floor(distractionSeconds / 300);
   return intervals * 50;
 }
 

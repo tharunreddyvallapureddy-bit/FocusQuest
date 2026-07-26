@@ -518,7 +518,7 @@ export const App: React.FC = () => {
 
               <p className="text-xs text-slate-300 leading-relaxed">
                 {player.focusMode
-                  ? "Focus Shield is active. Distracting websites drain -50 HP per 30 minutes. If HP hits 0, distracting sites will be hard-blocked!"
+                  ? "Focus Shield is active. Distracting websites drain -50 HP per 5 minutes. If HP hits 0, distracting sites will be hard-blocked!"
                   : "Passive tracking mode active. Access to educational sites earns +50 HP per 30 mins."}
               </p>
             </div>
@@ -542,7 +542,7 @@ export const App: React.FC = () => {
                   🔥 Distraction Penalty
                 </div>
                 <div className="text-xs text-slate-200 mt-1 font-semibold">
-                  -50 HP / 30 mins
+                  -50 HP / 5 mins
                 </div>
                 <div className="text-[10px] text-slate-400 mt-0.5">
                   Social Media, Streaming

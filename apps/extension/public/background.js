@@ -182,14 +182,14 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
         let stateChanged = false;
 
         // Apply rules:
-        // - Distracting: -1.67 HP / min (-50 HP per 30 mins)
+        // - Distracting: -10 HP / min (-50 HP per 5 mins)
         // - Educational: +1.67 HP / min (+50 HP per 30 mins), +1 XP, +1.67 Gold
         if (activeCategory === "distracting" && focusMode) {
-          hp = Math.max(0, hp - 1.67);
+          hp = Math.max(0, hp - 10);
           if (hp <= 0) {
             isDead = true;
           }
-          console.log(`[Focus Quest] Distraction penalty applied. HP: ${hp.toFixed(1)}`);
+          console.log(`[Focus Quest] Distraction penalty applied (-10 HP/min). HP: ${hp.toFixed(1)}`);
         } else if (activeCategory === "educational") {
           hp = Math.min(maxHp, hp + 1.67);
           intellectXp += 1;
