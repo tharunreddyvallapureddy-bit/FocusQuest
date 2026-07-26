@@ -16,7 +16,7 @@ import {
   User,
 } from "../lib/firebase";
 
-type Tab = "stats" | "goals" | "training" | "bounties";
+type Tab = "stats" | "goals" | "training" | "bounties" | "ads";
 
 type Goal = {
   id: string;
@@ -276,6 +276,17 @@ export const App: React.FC = () => {
     }
   };
 
+  const handleGainAdReward = async (gold: number, hp: number) => {
+    const next: PlayerState = {
+      ...player,
+      coins: player.coins + gold,
+      hp: Math.min(player.maxHp, player.hp + hp),
+      isDead: false,
+    };
+    await persistPlayer(next);
+    triggerToast(`📺 Ad Reward Claimed! +${gold} Gold & +${hp} HP`);
+  };
+
   const handleToggleFocusMode = async () => {
     const next = { ...player, focusMode: !player.focusMode };
     await persistPlayer(next);
@@ -452,6 +463,7 @@ export const App: React.FC = () => {
             { id: "goals", label: "Quests", icon: "📜" },
             { id: "training", label: "Games", icon: "🧩" },
             { id: "bounties", label: "Bounties", icon: "🎯" },
+            { id: "ads", label: "Ads", icon: "📺" },
           ] as const
         ).map((t) => (
           <button
@@ -702,7 +714,7 @@ export const App: React.FC = () => {
           </section>
         ) : tab === "training" ? (
           <GamesModule player={player} onGainXp={handleGiveTrainingXp} />
-        ) : (
+        ) : tab === "bounties" ? (
           <section className="space-y-3">
             <div className="flex justify-between items-center">
               <div>
@@ -759,6 +771,8 @@ export const App: React.FC = () => {
               )}
             </div>
           </section>
+        ) : (
+          <AdRewardsModule player={player} onGainReward={handleGainAdReward} />
         )}
       </main>
 
@@ -1030,5 +1044,145 @@ const SpeedMathGame: React.FC<{ onBack: () => void; onWin: () => void }> = ({
         {msg && <div className="text-xs font-bold text-center text-emerald-400">{msg}</div>}
       </form>
     </section>
+  );
+};
+
+const AdRewardsModule: React.FC<{
+  player: PlayerState;
+  onGainReward: (gold: number, hp: number) => void;
+}> = ({ player, onGainReward }) => {
+  const [adState, setAdState] = useState<"idle" | "watching" | "completed">("idle");
+  const [countdown, setCountdown] = useState(5);
+  const [adRevenue, setAdRevenue] = useState(2.45); // Platform ad revenue counter ($)
+
+  const handleWatchAd = () => {
+    setAdState("watching");
+    setCountdown(5);
+
+    const timer = setInterval(() => {
+      setCountdown((prev) => {
+        if (prev <= 1) {
+          clearInterval(timer);
+          setAdState("completed");
+          onGainReward(100, 20);
+          setAdRevenue((r) => r + 0.05); // $0.05 ad CPM revenue per impression
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  };
+
+  return (
+    <div className="space-y-3">
+      {/* Header Banner */}
+      <div className="p-4 rounded-xl border border-amber-500/30 bg-gradient-to-r from-amber-950/40 to-slate-900 glass-card">
+        <div className="flex justify-between items-center">
+          <div>
+            <h2 className="text-sm font-bold text-amber-300 flex items-center gap-1.5">
+              <span>📺</span> Rewarded Ad Chamber
+            </h2>
+            <p className="text-[11px] text-slate-300 mt-0.5">
+              Watch short developer ads to earn Gold & restore HP while supporting Focus Quest!
+            </p>
+          </div>
+          <div className="text-right">
+            <div className="text-[10px] text-slate-400">Platform Ad Revenue</div>
+            <div className="text-xs font-mono font-bold text-emerald-400">
+              ${adRevenue.toFixed(2)} USD
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Main Rewarded Ad Unit Card */}
+      <div className="p-4 rounded-xl border border-slate-800 bg-slate-900/80 glass-card text-center space-y-3">
+        <div className="w-12 h-12 rounded-full bg-amber-500/10 border border-amber-500/30 flex items-center justify-center mx-auto text-2xl">
+          🎬
+        </div>
+        <div>
+          <h3 className="text-xs font-bold text-slate-100">
+            Sponsored Developer Video Impression
+          </h3>
+          <p className="text-[11px] text-slate-400 mt-1">
+            Reward: <span className="text-amber-400 font-bold">+100 Gold</span> &{" "}
+            <span className="text-emerald-400 font-bold">+20 HP</span>
+          </p>
+        </div>
+
+        {adState === "idle" ? (
+          <button
+            onClick={handleWatchAd}
+            className="w-full py-2 text-xs font-bold rounded-lg bg-gradient-to-r from-amber-500 to-amber-600 text-slate-950 shadow-lg hover:from-amber-400 hover:to-amber-500 transition-all"
+          >
+            Watch 5s Ad (+100 Gold)
+          </button>
+        ) : adState === "watching" ? (
+          <div className="py-2.5 px-4 rounded-lg bg-slate-950 border border-amber-500/40 text-amber-400 text-xs font-bold flex items-center justify-center gap-2">
+            <div className="w-4 h-4 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
+            <span>Viewing Developer Sponsor Ad... ({countdown}s)</span>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            <div className="p-2 rounded-lg bg-emerald-950/60 border border-emerald-500/40 text-emerald-300 text-xs font-bold">
+              🎉 Reward Claimed! +100 Gold & +20 HP added!
+            </div>
+            <button
+              onClick={() => setAdState("idle")}
+              className="text-[11px] text-amber-400 hover:underline font-semibold"
+            >
+              Watch Another Ad
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Sponsored Partner Offers */}
+      <div className="space-y-2">
+        <h3 className="text-xs font-bold text-slate-300 uppercase tracking-wider px-1">
+          Sponsored Partner Offers (+200 Gold Each)
+        </h3>
+
+        {[
+          {
+            title: "GitHub Copilot Developer Trial",
+            desc: "Explore AI pair programming for developers.",
+            reward: "+200 Gold",
+            link: "https://github.com/features/copilot",
+          },
+          {
+            title: "LeetCode Premium Study Pass",
+            desc: "Unlock top tech interview questions & solutions.",
+            reward: "+200 Gold",
+            link: "https://leetcode.com/subscribe/",
+          },
+          {
+            title: "Coursera Professional Certificates",
+            desc: "Earn accredited computer science certificates.",
+            reward: "+200 Gold",
+            link: "https://coursera.org",
+          },
+        ].map((offer, idx) => (
+          <div
+            key={idx}
+            className="p-3 rounded-xl border border-slate-800 bg-slate-900/60 hover:border-amber-500/50 transition-all glass-card flex justify-between items-center"
+          >
+            <div>
+              <div className="text-xs font-bold text-slate-200">{offer.title}</div>
+              <div className="text-[10px] text-slate-400">{offer.desc}</div>
+            </div>
+            <button
+              onClick={() => {
+                onGainReward(200, 30);
+                window.open(offer.link, "_blank");
+              }}
+              className="px-2.5 py-1 text-[10px] font-bold rounded bg-gradient-to-r from-amber-500 to-amber-600 text-slate-950 shrink-0 cursor-pointer"
+            >
+              {offer.reward}
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 };

@@ -191,14 +191,15 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
         let currentGoals = goals || DEFAULT_GOALS;
 
         // Apply rules:
-        // - Distracting (e.g. YouTube): -10 HP / min (-50 HP per 5 mins)
+        // - Distracting (e.g. YouTube): -10 HP / min & -10 Coins / min (-50 HP & -50 Coins per 5 mins)
         // - Educational: +1.67 HP / min (+50 HP per 30 mins), +1 XP, +1.67 Gold
         if (activeCategory === "distracting" && focusMode) {
           hp = Math.max(0, hp - 10);
+          coins = Math.max(0, coins - 10); // Deduct Coins alongside HP
           if (hp <= 0) {
             isDead = true;
           }
-          console.log(`[Focus Quest] Distraction penalty applied (-10 HP/min). HP now: ${hp.toFixed(1)}`);
+          console.log(`[Focus Quest] Distraction penalty applied (-10 HP/min, -10 Coins/min). HP now: ${hp.toFixed(1)}, Coins: ${coins.toFixed(1)}`);
         } else if (activeCategory === "educational") {
           hp = Math.min(maxHp, hp + 1.67);
           intellectXp += 1;
