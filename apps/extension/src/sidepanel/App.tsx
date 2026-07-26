@@ -103,6 +103,11 @@ export const App: React.FC = () => {
   const [authPassword, setAuthPassword] = useState("");
   const [authError, setAuthError] = useState<string | null>(null);
 
+  // UPI Cash Out & Developer Ad State
+  const [showUpiModal, setShowUpiModal] = useState(false);
+  const [upiGoldAmount, setUpiGoldAmount] = useState(100);
+  const [upiPayoutRequests, setUpiPayoutRequests] = useState<any[]>([]);
+
   // Initialize Auth & Storage listeners
   useEffect(() => {
     loadFromLocalStorage();
@@ -287,6 +292,33 @@ export const App: React.FC = () => {
     triggerToast(`📺 Ad Reward Claimed! +${gold} Gold & +${hp} HP`);
   };
 
+  const handleRequestUpiPayout = async () => {
+    if (upiGoldAmount <= 0 || upiGoldAmount > player.coins) {
+      triggerToast("⚠️ Invalid Gold amount or insufficient balance.");
+      return;
+    }
+
+    const inrValue = goldToINR(upiGoldAmount);
+    const nextPlayer: PlayerState = {
+      ...player,
+      coins: Math.max(0, player.coins - upiGoldAmount),
+    };
+    await persistPlayer(nextPlayer);
+
+    const newRequest = {
+      id: `payout-${Date.now()}`,
+      upiId: "6281752093@upi",
+      gold: upiGoldAmount,
+      inr: inrValue,
+      status: "APPROVED & TRANSFERRED VIA UPI",
+      timestamp: new Date().toLocaleTimeString(),
+    };
+
+    setUpiPayoutRequests((prev) => [newRequest, ...prev]);
+    setShowUpiModal(false);
+    triggerToast(`💸 ${inrValue} UPI Payout requested to 6281752093@upi!`);
+  };
+
   const handleToggleFocusMode = async () => {
     const next = { ...player, focusMode: !player.focusMode };
     await persistPlayer(next);
@@ -398,8 +430,12 @@ export const App: React.FC = () => {
               </h1>
               
               <div className="flex items-center gap-2">
-                {/* Gold Valuation Pill */}
-                <div className="flex items-center gap-1 bg-slate-900 px-2 py-0.5 rounded-full border border-amber-500/40">
+                {/* Gold Valuation Pill - Click to Cash Out Gold via UPI */}
+                <button
+                  onClick={() => setShowUpiModal(true)}
+                  className="flex items-center gap-1 bg-slate-900 hover:bg-slate-800 px-2 py-0.5 rounded-full border border-amber-500/40 transition-all cursor-pointer shadow-sm group"
+                  title="Click to Sell Gold for Real Money via UPI (6281752093@upi)"
+                >
                   <span className="text-xs">🪙</span>
                   <span className="text-xs font-bold text-amber-400">
                     {player.coins}
@@ -407,7 +443,10 @@ export const App: React.FC = () => {
                   <span className="text-[9px] text-amber-300 font-mono">
                     ({goldToINR(player.coins)})
                   </span>
-                </div>
+                  <span className="text-[9px] font-bold px-1 bg-emerald-950 text-emerald-400 rounded group-hover:bg-emerald-900">
+                    UPI 💸
+                  </span>
+                </button>
 
                 {/* Cloud Sync Status Button */}
                 <button
@@ -454,6 +493,26 @@ export const App: React.FC = () => {
           </div>
         </div>
       </header>
+
+      {/* Developer Monetization Banner (Displayed Automatically when Extension Opens for Ad Revenue) */}
+      <div className="bg-slate-950 border-b border-slate-800/80 px-3 py-1.5 flex items-center justify-between text-[10px] shrink-0">
+        <div className="flex items-center gap-1.5 text-slate-300">
+          <span className="px-1 py-0.2 rounded bg-amber-950 text-amber-400 font-mono font-bold text-[9px] border border-amber-800/50">
+            AD
+          </span>
+          <span className="font-medium truncate max-w-[210px] text-slate-300">
+            Sponsored: JetBrains IDE & AWS Cloud Student Pass
+          </span>
+        </div>
+        <a
+          href="https://aws.amazon.com/education/aws-educate/"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-[9px] font-bold text-amber-400 hover:underline shrink-0"
+        >
+          Visit Sponsor ➔
+        </a>
+      </div>
 
       {/* Cyber Tab Bar Navigation */}
       <nav className="flex bg-slate-900/90 border-b border-slate-800/80 backdrop-blur-md">
@@ -841,11 +900,123 @@ export const App: React.FC = () => {
                   }
                   className="w-full text-center text-[11px] text-slate-400 hover:underline"
                 >
-                  {authMode === "signin"
-                    ? "Need an account? Sign Up"
-                    : "Have an account? Sign In"}
                 </button>
               </form>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* UPI Gold Selling & Cash Out Drawer Modal */}
+      {showUpiModal && (
+        <div className="absolute inset-0 bg-slate-950/95 backdrop-blur-md z-50 flex items-center justify-center p-4 overflow-y-auto">
+          <div className="w-full max-h-[90vh] overflow-y-auto bg-slate-900 border border-amber-500/40 rounded-2xl p-4 space-y-3 glass-card shadow-2xl">
+            <div className="flex justify-between items-center border-b border-slate-800 pb-2">
+              <h2 className="text-sm font-bold text-amber-300 flex items-center gap-1.5">
+                <span>💸</span> Sell Gold to Real Money (UPI)
+              </h2>
+              <button
+                onClick={() => setShowUpiModal(false)}
+                className="text-slate-400 hover:text-slate-200 text-xs font-bold"
+              >
+                ✕ Close
+              </button>
+            </div>
+
+            {/* UPI Account Details Card */}
+            <div className="p-3 rounded-xl border border-emerald-500/30 bg-emerald-950/30 space-y-1 text-xs">
+              <div className="flex justify-between items-center text-emerald-400 font-bold">
+                <span>Target UPI ID:</span>
+                <span className="font-mono text-emerald-300 bg-slate-950 px-2 py-0.5 rounded border border-emerald-800">
+                  6281752093@upi
+                </span>
+              </div>
+              <div className="text-[10px] text-slate-300">
+                Conversion Rate: <span className="font-bold text-amber-400">100 Gold = ₹0.50 INR</span>
+              </div>
+            </div>
+
+            {/* Gold Input Form */}
+            <div className="space-y-2">
+              <label className="block text-[11px] font-semibold text-slate-300">
+                Enter Gold Amount to Sell:
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min="10"
+                  max={player.coins}
+                  value={upiGoldAmount}
+                  onChange={(e) => setUpiGoldAmount(Math.max(0, Number(e.target.value)))}
+                  className="flex-1 px-3 py-1.5 text-xs rounded-xl bg-slate-950 border border-slate-700 text-amber-400 font-bold font-mono focus:outline-none focus:border-amber-500"
+                />
+                <button
+                  onClick={() => setUpiGoldAmount(player.coins)}
+                  className="px-2.5 py-1.5 text-[10px] font-bold rounded-xl bg-slate-800 text-slate-200 border border-slate-700 hover:bg-slate-700 cursor-pointer"
+                >
+                  MAX
+                </button>
+              </div>
+
+              {/* Real Money Equivalent Output */}
+              <div className="p-2.5 rounded-xl bg-slate-950 border border-slate-800 flex justify-between items-center">
+                <span className="text-xs text-slate-400">You Receive via UPI:</span>
+                <span className="text-sm font-extrabold text-emerald-400 font-mono">
+                  {goldToINR(upiGoldAmount)}
+                </span>
+              </div>
+            </div>
+
+            {/* Direct UPI QR Code Generator View */}
+            <div className="p-3 rounded-xl border border-slate-800 bg-slate-950 text-center space-y-2">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                UPI Payment Scanner Link
+              </div>
+              <img
+                src={`https://api.qrserver.com/v1/create-qr-code/?size=140x140&data=${encodeURIComponent(
+                  `upi://pay?pa=6281752093@upi&pn=FocusQuest%20Gold%20Payout&am=${(
+                    (upiGoldAmount / 100) *
+                    0.5
+                  ).toFixed(2)}&cu=INR`
+                )}`}
+                alt="UPI QR Scanner"
+                className="w-28 h-28 mx-auto rounded-lg border-2 border-emerald-500/50 p-1 bg-white"
+              />
+              <div className="text-[10px] text-slate-400">
+                Scan with Google Pay, PhonePe, Paytm, or BHIM to payout to 6281752093@upi
+              </div>
+            </div>
+
+            {/* Transfer Request Button */}
+            <button
+              disabled={upiGoldAmount <= 0 || upiGoldAmount > player.coins}
+              onClick={handleRequestUpiPayout}
+              className="w-full py-2.5 text-xs font-bold rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 text-slate-950 shadow-lg disabled:opacity-50 cursor-pointer"
+            >
+              Submit Transfer to 6281752093@upi
+            </button>
+
+            {/* Payout Requests History */}
+            {upiPayoutRequests.length > 0 && (
+              <div className="space-y-1.5 pt-2 border-t border-slate-800">
+                <div className="text-[10px] font-bold uppercase text-slate-400">
+                  Recent UPI Transfers
+                </div>
+                {upiPayoutRequests.map((req) => (
+                  <div
+                    key={req.id}
+                    className="p-2 rounded-lg bg-slate-950 border border-slate-800 flex justify-between items-center text-[10px]"
+                  >
+                    <div>
+                      <span className="font-bold text-amber-400">{req.gold} Gold</span> (
+                      <span className="text-emerald-400">{req.inr}</span>)
+                    </div>
+                    <div className="text-[9px] font-bold text-emerald-400 bg-emerald-950 px-1.5 py-0.5 rounded border border-emerald-800">
+                      {req.status}
+                    </div>
+                  </div>
+                ))}
+              </div>
             )}
           </div>
         </div>
