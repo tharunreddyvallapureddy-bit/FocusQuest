@@ -37,6 +37,7 @@ type PlayerState = {
   isDead: boolean;
   avatarSeed: string;
   focusMode: boolean; // Active DNR blocking toggle
+  username?: string;
   name?: string;
   mobileNumber?: string;
   upiId?: string;
@@ -51,6 +52,7 @@ const DEFAULT_PLAYER: PlayerState = {
   isDead: false,
   avatarSeed: "AdventurerHero",
   focusMode: true,
+  username: "",
   name: "",
   mobileNumber: "",
   upiId: "",
@@ -107,6 +109,7 @@ export const App: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [authMode, setAuthMode] = useState<"signin" | "signup">("signin");
+  const [authUsername, setAuthUsername] = useState("");
   const [authName, setAuthName] = useState("");
   const [authMobile, setAuthMobile] = useState("");
   const [authUpiId, setAuthUpiId] = useState("");
@@ -136,6 +139,10 @@ export const App: React.FC = () => {
             isDead: cloudProfile.isDead ?? false,
             avatarSeed: cloudProfile.avatarSeed ?? "AdventurerHero",
             focusMode: cloudProfile.focusMode ?? true,
+            username: cloudProfile.username || cloudProfile.name || user.email?.split("@")[0] || "Adventurer",
+            name: cloudProfile.name || cloudProfile.username || "Adventurer",
+            upiId: cloudProfile.upiId || "",
+            isLoggedIn: true,
           };
           setPlayer(synced);
           saveToLocal(synced);
@@ -350,14 +357,17 @@ export const App: React.FC = () => {
     e.preventDefault();
     setAuthError(null);
 
-    const targetName = authName || player.name || "Student Adventurer";
-    const targetMobile = authMobile || player.mobileNumber || "";
-    const targetUpi = authUpiId || player.upiId || "user@upi";
+    const targetUsername =
+      authUsername.trim() ||
+      player.username ||
+      (authEmail.includes("@") ? authEmail.split("@")[0] : "") ||
+      "Adventurer";
+    const targetUpi = authUpiId || player.upiId || "";
 
     const userProfile: PlayerState = {
       ...player,
-      name: targetName,
-      mobileNumber: targetMobile,
+      username: targetUsername,
+      name: targetUsername,
       upiId: targetUpi,
       isLoggedIn: true,
     };
@@ -368,8 +378,9 @@ export const App: React.FC = () => {
         userCred = await createUserWithEmailAndPassword(auth, authEmail, authPassword);
         if (userCred.user) {
           await syncProfileToFirestore(userCred.user.uid, {
-            name: targetName,
-            mobileNumber: targetMobile,
+            username: targetUsername,
+            name: targetUsername,
+            mobileNumber: player.mobileNumber || "",
             upiId: targetUpi,
             xp: player.intellectXp,
             hp: player.hp,
@@ -389,8 +400,8 @@ export const App: React.FC = () => {
             userProfile.coins = cloudProfile.gold ?? player.coins;
             userProfile.intellectXp = cloudProfile.xp ?? player.intellectXp;
             userProfile.isDead = cloudProfile.isDead ?? player.isDead;
-            userProfile.name = cloudProfile.name || targetName;
-            userProfile.mobileNumber = cloudProfile.mobileNumber || targetMobile;
+            userProfile.username = cloudProfile.username || cloudProfile.name || targetUsername;
+            userProfile.name = cloudProfile.name || cloudProfile.username || targetUsername;
             userProfile.upiId = cloudProfile.upiId || targetUpi;
           }
         }
@@ -401,7 +412,7 @@ export const App: React.FC = () => {
 
     await persistPlayer(userProfile);
     setShowAuthModal(false);
-    triggerToast(`🔥 Welcome, ${targetName}! Focus Quest Unlocked.`);
+    triggerToast(`🔥 Welcome, ${targetUsername}! Focus Quest Unlocked.`);
   };
 
   const loadBounties = async () => {
@@ -466,6 +477,16 @@ export const App: React.FC = () => {
           </div>
 
           <form onSubmit={handleAuthSubmit} className="space-y-2.5">
+            {authMode === "signup" && (
+              <input
+                type="text"
+                placeholder="Username (e.g. TharunReddy)"
+                value={authUsername}
+                onChange={(e) => setAuthUsername(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-emerald-500 font-medium"
+                required
+              />
+            )}
             <input
               type="email"
               placeholder="Email address"
@@ -502,7 +523,7 @@ export const App: React.FC = () => {
               className="w-full text-center text-[11px] text-slate-400 hover:text-slate-200 cursor-pointer pt-1"
             >
               {authMode === "signin"
-                ? "Need an account? Sign Up"
+                ? "Need an account? Sign Up with Username"
                 : "Already have an account? Sign In"}
             </button>
           </form>
@@ -548,9 +569,14 @@ export const App: React.FC = () => {
           {/* Hero Vitals */}
           <div className="flex-1 space-y-1.5">
             <div className="flex justify-between items-center">
-              <h1 className="text-base font-extrabold tracking-tight text-gradient-emerald">
-                Focus Quest
-              </h1>
+              <div>
+                <h1 className="text-sm font-extrabold tracking-tight text-gradient-emerald truncate max-w-[135px]" title={player.username || player.name || "Adventurer"}>
+                  ⚡ {player.username || player.name || "Adventurer"}
+                </h1>
+                <div className="text-[9px] text-slate-400 font-medium">
+                  Focus Quest • Lvl {level}
+                </div>
+              </div>
               
               <div className="flex items-center gap-2">
                 {/* Gold Valuation Pill - Click to Cash Out Gold via UPI */}
@@ -958,105 +984,104 @@ export const App: React.FC = () => {
         )}
       </main>
 
-      {/* Firebase Cloud Sync Drawer Modal */}
+      {/* User Profile & Firebase Cloud Sync Drawer Modal */}
       {showAuthModal && (
         <div className="absolute inset-0 bg-slate-950/90 backdrop-blur-md z-50 flex items-center justify-center p-4">
-          <div className="w-full bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3 glass-card">
-            <div className="flex justify-between items-center">
-              <h3 className="text-sm font-bold text-emerald-400">
-                ☁️ Firebase Cloud Sync
+          <div className="w-full bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3 glass-card shadow-2xl">
+            <div className="flex justify-between items-center border-b border-slate-800 pb-2">
+              <h3 className="text-sm font-bold text-emerald-400 flex items-center gap-1.5">
+                <span>👤</span> Individual User Profile
               </h3>
               <button
                 onClick={() => setShowAuthModal(false)}
-                className="text-xs text-slate-400 hover:text-slate-200"
+                className="text-xs text-slate-400 hover:text-slate-200 font-bold"
               >
                 ✕
               </button>
             </div>
-            {currentUser ? (
-              <div className="space-y-3">
-                <p className="text-xs text-slate-300">
-                  Signed in as <strong>{currentUser.email}</strong>
-                </p>
+
+            <div className="space-y-3">
+              <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
+                <div className="text-[10px] uppercase font-bold text-slate-400">
+                  Profile Account Details
+                </div>
+                <div className="space-y-2">
+                  <div>
+                    <label className="text-[10px] font-semibold text-slate-300">
+                      Your Username:
+                    </label>
+                    <input
+                      type="text"
+                      value={player.username || player.name || ""}
+                      onChange={(e) => {
+                        const newName = e.target.value;
+                        setPlayer((prev) => ({ ...prev, username: newName, name: newName }));
+                      }}
+                      placeholder="Username (e.g. TharunReddy)"
+                      className="w-full px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs text-emerald-300 font-bold focus:outline-none focus:border-emerald-500 mt-0.5"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] font-semibold text-slate-300">
+                      Personal UPI ID (For Gold Selling):
+                    </label>
+                    <input
+                      type="text"
+                      value={player.upiId || ""}
+                      onChange={(e) => {
+                        const newUpi = e.target.value;
+                        setPlayer((prev) => ({ ...prev, upiId: newUpi }));
+                      }}
+                      placeholder="e.g. yourname@upi"
+                      className="w-full px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs text-amber-300 font-mono focus:outline-none focus:border-amber-500 mt-0.5"
+                    />
+                  </div>
+                </div>
+
                 <button
                   onClick={async () => {
-                    await signOut(auth);
-                    setCurrentUser(null);
-                    triggerToast("Signed out of Firebase");
+                    await persistPlayer(player);
+                    setShowAuthModal(false);
+                    triggerToast("✨ Profile Updated Successfully!");
                   }}
-                  className="w-full py-1.5 text-xs font-bold rounded-lg bg-rose-600 text-slate-50"
+                  className="w-full py-1.5 text-xs font-bold rounded-lg bg-emerald-600 hover:bg-emerald-500 text-slate-950 cursor-pointer transition-all mt-1"
                 >
-                  Sign Out
+                  Save Profile Changes
                 </button>
               </div>
-            ) : (
-              <form onSubmit={handleAuthSubmit} className="space-y-2">
-                {authMode === "signup" && (
-                  <>
-                    <input
-                      type="text"
-                      placeholder="Full Name (e.g. Tharun Reddy)"
-                      value={authName}
-                      onChange={(e) => setAuthName(e.target.value)}
-                      className="w-full px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-emerald-500"
-                      required
-                    />
-                    <input
-                      type="tel"
-                      placeholder="Mobile Number (e.g. 6281752093)"
-                      value={authMobile}
-                      onChange={(e) => setAuthMobile(e.target.value)}
-                      className="w-full px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-emerald-500"
-                      required
-                    />
-                    <input
-                      type="text"
-                      placeholder="UPI ID / Scanner Target (e.g. 6281752093@upi)"
-                      value={authUpiId}
-                      onChange={(e) => setAuthUpiId(e.target.value)}
-                      className="w-full px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-emerald-500 font-mono"
-                      required
-                    />
-                  </>
-                )}
-                <input
-                  type="email"
-                  placeholder="Email address"
-                  value={authEmail}
-                  onChange={(e) => setAuthEmail(e.target.value)}
-                  className="w-full px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-emerald-500"
-                  required
-                />
-                <input
-                  type="password"
-                  placeholder="Password"
-                  value={authPassword}
-                  onChange={(e) => setAuthPassword(e.target.value)}
-                  className="w-full px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-emerald-500"
-                  required
-                />
-                {authError && (
-                  <div className="text-[11px] text-rose-400 font-medium">{authError}</div>
-                )}
+
+              {currentUser ? (
+                <div className="p-2.5 rounded-xl bg-emerald-950/30 border border-emerald-500/30 flex justify-between items-center text-xs">
+                  <span className="text-slate-300 text-[11px]">
+                    Cloud Sync: <strong className="text-emerald-400">{currentUser.email}</strong>
+                  </span>
+                  <button
+                    onClick={async () => {
+                      await signOut(auth);
+                      setCurrentUser(null);
+                      await persistPlayer({ ...player, isLoggedIn: false });
+                      setShowAuthModal(false);
+                      triggerToast("Signed out");
+                    }}
+                    className="px-2 py-1 text-[10px] font-bold rounded bg-rose-600 hover:bg-rose-500 text-white cursor-pointer"
+                  >
+                    Logout 🚪
+                  </button>
+                </div>
+              ) : (
                 <button
-                  type="submit"
-                  className="w-full py-1.5 text-xs font-bold rounded-lg bg-emerald-600 hover:bg-emerald-500 text-slate-950 cursor-pointer"
+                  onClick={async () => {
+                    await persistPlayer({ ...player, isLoggedIn: false });
+                    setShowAuthModal(false);
+                    triggerToast("Signed out of session");
+                  }}
+                  className="w-full py-1.5 text-xs font-bold rounded-lg bg-rose-600/80 hover:bg-rose-600 text-slate-50 cursor-pointer"
                 >
-                  {authMode === "signin" ? "Sign In" : "Create Account & Sync Profile"}
+                  Logout 🚪
                 </button>
-                <button
-                  type="button"
-                  onClick={() =>
-                    setAuthMode(authMode === "signin" ? "signup" : "signin")
-                  }
-                  className="w-full text-center text-[11px] text-slate-400 hover:underline cursor-pointer"
-                >
-                  {authMode === "signin"
-                    ? "Need an account? Sign Up with Name, Phone & UPI ID"
-                    : "Have an account? Sign In"}
-                </button>
-              </form>
-            )}
+              )}
+            </div>
           </div>
         </div>
       )}
