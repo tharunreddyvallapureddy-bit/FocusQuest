@@ -54,11 +54,13 @@ export type { User };
 export async function syncProfileToFirestore(
   userId: string,
   profile: {
+    username?: string;
     name?: string;
+    email?: string;
     mobileNumber?: string;
     upiId?: string;
-    username?: string;
     avatarSeed?: string;
+    focusMode?: boolean;
     xp: number;
     hp: number;
     maxHp: number;
@@ -68,6 +70,7 @@ export async function syncProfileToFirestore(
   }
 ) {
   try {
+    if (!userId) return;
     const userRef = doc(db, "profiles", userId);
     await setDoc(
       userRef,
@@ -77,8 +80,9 @@ export async function syncProfileToFirestore(
       },
       { merge: true }
     );
+    console.log(`[Firebase] Profile synced successfully for UID: ${userId}`);
   } catch (err) {
-    console.warn("[Firebase] Profile sync fallback:", err);
+    console.warn("[Firebase] Profile sync error:", err);
   }
 }
 

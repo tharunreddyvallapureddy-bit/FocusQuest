@@ -215,9 +215,19 @@ export const App: React.FC = () => {
     setPlayer(next);
     saveToLocal(next);
 
-    if (currentUser) {
+    const targetUid =
+      auth.currentUser?.uid ||
+      currentUser?.uid ||
+      (next.email ? "user_" + next.email.replace(/[^a-zA-Z0-9]/g, "_") : null);
+
+    if (targetUid) {
       const currentLevel = calculateLevel(next.intellectXp);
-      await syncProfileToFirestore(currentUser.uid, {
+      await syncProfileToFirestore(targetUid, {
+        username: next.username || next.name || "",
+        name: next.name || next.username || "",
+        email: next.email || auth.currentUser?.email || "",
+        mobileNumber: next.mobileNumber || "",
+        upiId: next.upiId || "",
         xp: next.intellectXp,
         hp: next.hp,
         maxHp: next.maxHp,
@@ -225,6 +235,7 @@ export const App: React.FC = () => {
         level: currentLevel,
         isDead: next.isDead,
         avatarSeed: next.avatarSeed,
+        focusMode: next.focusMode,
       });
     }
   };
