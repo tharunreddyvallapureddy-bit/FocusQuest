@@ -4,19 +4,30 @@ import {
   calculateLevel,
   goldToINR,
   getDiceBearAvatar,
+  calculateQuestRewards,
 } from "../lib/mechanics";
 import {
   auth,
+  db,
+  collection,
+  query,
+  where,
+  getDocs,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   signOut,
   onAuthStateChanged,
   syncProfileToFirestore,
   loadProfileFromFirestore,
+  savePayoutRequestToFirestore,
+  syncAdminProfileToFirestore,
   User,
 } from "../lib/firebase";
 
-type Tab = "stats" | "goals" | "training" | "bounties" | "ads";
+import { AiGamesModule } from "./components/AiGamesModule";
+import { AdminPortalModule } from "./components/AdminPortalModule";
+
+type Tab = "stats" | "goals" | "training" | "bounties";
 
 type Goal = {
   id: string;
@@ -36,21 +47,24 @@ type PlayerState = {
   intellectXp: number;
   isDead: boolean;
   avatarSeed: string;
+  customAvatarUrl?: string;
   focusMode: boolean; // Active DNR blocking toggle
   username?: string;
   name?: string;
   mobileNumber?: string;
   upiId?: string;
   isLoggedIn?: boolean;
+  isAdmin?: boolean;
 };
 
 const DEFAULT_PLAYER: PlayerState = {
   hp: 300,
   maxHp: BASE_MAX_HP,
-  coins: 100,
+  coins: 0,
   intellectXp: 0,
   isDead: false,
   avatarSeed: "AdventurerHero",
+  customAvatarUrl: "",
   focusMode: true,
   username: "",
   name: "",
@@ -59,38 +73,7 @@ const DEFAULT_PLAYER: PlayerState = {
   isLoggedIn: false,
 };
 
-const DEFAULT_GOALS: Goal[] = [
-  {
-    id: "react-2h",
-    title: "Deep Work: React & TypeScript",
-    description: "Build or study focused for 120 minutes.",
-    goalType: "daily",
-    targetMinutes: 120,
-    progressMinutes: 0,
-    isCompleted: false,
-    autoVerified: false,
-  },
-  {
-    id: "algo-30m",
-    title: "Algorithm Mastery: Solve 3 Problems",
-    description: "Practice on LeetCode, HackerRank or Codeforces.",
-    goalType: "daily",
-    targetMinutes: 30,
-    progressMinutes: 0,
-    isCompleted: false,
-    autoVerified: false,
-  },
-  {
-    id: "clean-code-weekly",
-    title: "Weekly Quest: Ship a Full Feature",
-    description: "Complete a full module refactor or new feature.",
-    goalType: "weekly",
-    targetMinutes: 300,
-    progressMinutes: 0,
-    isCompleted: false,
-    autoVerified: false,
-  },
-];
+const DEFAULT_GOALS: Goal[] = [];
 
 export const App: React.FC = () => {
   const [tab, setTab] = useState<Tab>("stats");
@@ -99,8 +82,10 @@ export const App: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [bounties, setBounties] = useState<any[]>([]);
   const [bountiesLoading, setBountiesLoading] = useState(false);
+  const [bountyCategory, setBountyCategory] = useState<"official" | "opensource">("official");
   const [newGoalTitle, setNewGoalTitle] = useState("");
   const [newGoalDesc, setNewGoalDesc] = useState("");
+  const [newGoalMinutes, setNewGoalMinutes] = useState("30");
   const [newGoalType, setNewGoalType] = useState<"daily" | "weekly">("daily");
   const [showAddGoal, setShowAddGoal] = useState(false);
   const [notification, setNotification] = useState<string | null>(null);
@@ -122,31 +107,38 @@ export const App: React.FC = () => {
   const [upiGoldAmount, setUpiGoldAmount] = useState(100);
   const [upiPayoutRequests, setUpiPayoutRequests] = useState<any[]>([]);
 
+  // Admin Portal State
+  const [showAdminPortal, setShowAdminPortal] = useState(false);
+
   // Initialize Auth & Storage listeners
   useEffect(() => {
+    syncAdminProfileToFirestore();
     loadFromLocalStorage();
 
     const unsubscribeAuth = onAuthStateChanged(auth, async (user) => {
       setCurrentUser(user);
       if (user) {
         const cloudProfile = await loadProfileFromFirestore(user.uid);
-        if (cloudProfile) {
+        setPlayer((prev) => {
           const synced: PlayerState = {
-            hp: cloudProfile.hp ?? 300,
-            maxHp: cloudProfile.maxHp ?? 300,
-            coins: cloudProfile.gold ?? 100,
-            intellectXp: cloudProfile.xp ?? 0,
-            isDead: cloudProfile.isDead ?? false,
-            avatarSeed: cloudProfile.avatarSeed ?? "AdventurerHero",
-            focusMode: cloudProfile.focusMode ?? true,
-            username: cloudProfile.username || cloudProfile.name || user.email?.split("@")[0] || "Adventurer",
-            name: cloudProfile.name || cloudProfile.username || "Adventurer",
-            upiId: cloudProfile.upiId || "",
+            ...prev,
+            hp: cloudProfile?.hp ?? prev.hp ?? 300,
+            maxHp: cloudProfile?.maxHp ?? prev.maxHp ?? 300,
+            coins: cloudProfile?.gold ?? prev.coins ?? 100,
+            intellectXp: cloudProfile?.xp ?? prev.intellectXp ?? 0,
+            isDead: cloudProfile?.isDead ?? prev.isDead ?? false,
+            avatarSeed: cloudProfile?.avatarSeed ?? prev.avatarSeed ?? "AdventurerHero",
+            customAvatarUrl: cloudProfile?.customAvatarUrl || prev.customAvatarUrl || "",
+            focusMode: cloudProfile?.focusMode ?? prev.focusMode ?? true,
+            username: cloudProfile?.username || cloudProfile?.name || prev.username || user.email?.split("@")[0] || "Adventurer",
+            name: cloudProfile?.name || cloudProfile?.username || prev.name || "Adventurer",
+            email: user.email || prev.email || "",
+            upiId: cloudProfile?.upiId || prev.upiId || "",
             isLoggedIn: true,
           };
-          setPlayer(synced);
           saveToLocal(synced);
-        }
+          return synced;
+        });
       }
     });
 
@@ -180,6 +172,25 @@ export const App: React.FC = () => {
     setTimeout(() => setNotification(null), 3000);
   };
 
+  const checkMidnightDailyReset = (currentGoals: Goal[]): { updatedGoals: Goal[]; expiredCount: number } => {
+    const todayStr = new Date().toISOString().split("T")[0];
+    let expiredCount = 0;
+
+    const updatedGoals = currentGoals.filter((goal) => {
+      if (goal.goalType === "daily") {
+        const goalDate = goal.createdDate || todayStr;
+        // If daily quest crossed midnight (12:00 AM) and was not completed before deadline:
+        if (goalDate < todayStr && !goal.isCompleted) {
+          expiredCount++;
+          return false; // Remove expired daily quest (no rewards given)
+        }
+      }
+      return true;
+    });
+
+    return { updatedGoals, expiredCount };
+  };
+
   const loadFromLocalStorage = async () => {
     if (typeof chrome === "undefined" || !chrome.storage) {
       setLoading(false);
@@ -192,8 +203,19 @@ export const App: React.FC = () => {
         const storedPlayer = result.playerState as PlayerState | undefined;
         const storedGoals = result.goals as Goal[] | undefined;
 
+        const rawGoals = (storedGoals ?? DEFAULT_GOALS).filter(
+          (g) => g.id !== "react-2h" && g.id !== "algo-30m" && g.id !== "clean-code-weekly"
+        );
+        const { updatedGoals, expiredCount } = checkMidnightDailyReset(rawGoals);
+
         setPlayer(storedPlayer ?? DEFAULT_PLAYER);
-        setGoals(storedGoals ?? DEFAULT_GOALS);
+        setGoals(updatedGoals);
+        if (storedGoals && storedGoals.length !== updatedGoals.length) {
+          persistGoals(updatedGoals);
+        }
+        if (expiredCount > 0) {
+          triggerToast(`⚠️ ${expiredCount} uncompleted daily quest(s) expired at 12:00 AM! Rewards forfeited.`);
+        }
 
         const cache = result.bountiesCache as any[] | undefined;
         const fetchedAt = result.bountiesFetchedAt as string | undefined;
@@ -235,6 +257,7 @@ export const App: React.FC = () => {
         level: currentLevel,
         isDead: next.isDead,
         avatarSeed: next.avatarSeed,
+        customAvatarUrl: next.customAvatarUrl || "",
         focusMode: next.focusMode,
       });
     }
@@ -255,9 +278,10 @@ export const App: React.FC = () => {
     );
     persistGoals(updatedGoals);
 
-    const rewardHp = 50;
-    const rewardCoins = 500;
-    const rewardXp = 50;
+    const rewards = calculateQuestRewards(goal.targetMinutes || 30);
+    const rewardHp = rewards.hp;
+    const rewardCoins = rewards.gold;
+    const rewardXp = rewards.xp;
 
     const newXp = player.intellectXp + rewardXp;
     const next: PlayerState = {
@@ -268,27 +292,45 @@ export const App: React.FC = () => {
       isDead: false,
     };
     await persistPlayer(next);
-    triggerToast(`🎉 Quest Complete! +${rewardCoins} Gold, +${rewardHp} HP, +${rewardXp} XP`);
+    triggerToast(`🎉 Quest Complete! +${rewardCoins} Gold, +${rewardHp} HP, +${rewardXp} XP (${goal.targetMinutes || 30}m scaled)`);
   };
 
   const handleAddGoal = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newGoalTitle.trim()) return;
 
+    const parsedMins = Math.max(5, parseInt(newGoalMinutes) || 30);
+
+    const todayStr = new Date().toISOString().split("T")[0];
     const newGoal: Goal = {
       id: `goal-${Date.now()}`,
       title: newGoalTitle.trim(),
       description: newGoalDesc.trim() || undefined,
       goalType: newGoalType,
+      targetMinutes: parsedMins,
+      progressMinutes: 0,
       isCompleted: false,
+      createdDate: todayStr,
     };
 
     const updated = [newGoal, ...goals];
     persistGoals(updated);
     setNewGoalTitle("");
     setNewGoalDesc("");
+    setNewGoalMinutes("30");
     setShowAddGoal(false);
-    triggerToast("✨ New Quest Added!");
+    triggerToast(`✨ New Quest Added (${parsedMins} mins duration)!`);
+  };
+
+  const handleDeleteGoal = (goalId: string) => {
+    const updated = goals.filter((g) => g.id !== goalId);
+    persistGoals(updated);
+    triggerToast("🗑️ Quest Deleted!");
+  };
+
+  const handleClearAllGoals = () => {
+    persistGoals([]);
+    triggerToast("🧹 All Quests Cleared!");
   };
 
   const handleGiveTrainingXp = async (amount: number) => {
@@ -335,18 +377,36 @@ export const App: React.FC = () => {
     };
     await persistPlayer(nextPlayer);
 
+    const targetUid =
+      auth.currentUser?.uid ||
+      currentUser?.uid ||
+      (player.email ? "user_" + player.email.replace(/[^a-zA-Z0-9]/g, "_") : "user_guest");
+
+    // Save requested payout details to Firestore collection 'payout_requests' for Admin review
+    await savePayoutRequestToFirestore({
+      userId: targetUid,
+      username: player.username || player.name || "Adventurer",
+      name: player.name || player.username || "",
+      email: player.email || currentUser?.email || "",
+      mobileNumber: player.mobileNumber || "",
+      upiId: targetUpi,
+      goldAmount: upiGoldAmount,
+      inrValue: inrValue,
+      status: "PENDING_ADMIN_APPROVAL",
+    });
+
     const newRequest = {
       id: `payout-${Date.now()}`,
       upiId: targetUpi,
       gold: upiGoldAmount,
       inr: inrValue,
-      status: "APPROVED & TRANSFERRED VIA UPI",
+      status: "SENT TO ADMIN FOR APPROVAL & TRANSFER",
       timestamp: new Date().toLocaleTimeString(),
     };
 
     setUpiPayoutRequests((prev) => [newRequest, ...prev]);
     setShowUpiModal(false);
-    triggerToast(`💸 ${inrValue} UPI Payout requested to ${targetUpi}!`);
+    triggerToast(`💸 Payout request of ${inrValue} sent to Admin for transfer to ${targetUpi}!`);
   };
 
   const handleToggleFocusMode = async () => {
@@ -368,30 +428,118 @@ export const App: React.FC = () => {
     e.preventDefault();
     setAuthError(null);
 
+    const rawInput = (authEmail || authUsername).trim();
+    const cleanPassword = authPassword.trim();
+    const cleanUsername = authUsername.trim();
+
+    if (!rawInput) {
+      setAuthError("Please enter your Email address or Username.");
+      return;
+    }
+    if (!cleanPassword || cleanPassword.length < 4) {
+      setAuthError("Password must be at least 4 characters long.");
+      return;
+    }
+    if (authMode === "signup" && !cleanUsername) {
+      setAuthError("Please enter a username.");
+      return;
+    }
+
+    const cleanInputUser = rawInput.toLowerCase();
+
+    // 1. Fixed Admin Login Verification (No Sign Up Needed)
+    const isAdminCredentials =
+      (cleanInputUser === "vallapureddytharunreddy6281@gmail.com" ||
+       cleanInputUser === "tharun") &&
+      cleanPassword === "Tharunreddy@23";
+
+    if (isAdminCredentials) {
+      const adminProfile: PlayerState = {
+        ...player,
+        username: "Tharun",
+        name: "Vallapureddy Tharun Reddy",
+        email: "vallapureddytharunreddy6281@gmail.com",
+        mobileNumber: player.mobileNumber || "75692 00917",
+        upiId: player.upiId || "7569200917@upi",
+        isLoggedIn: true,
+        isAdmin: true,
+      };
+
+      try {
+        await signInWithEmailAndPassword(auth, "vallapureddytharunreddy6281@gmail.com", "Tharunreddy@23");
+      } catch (e) {
+        console.log("[Admin Login] Authenticated via fixed Admin credentials.");
+      }
+
+      await syncAdminProfileToFirestore();
+      await persistPlayer(adminProfile);
+      setShowAuthModal(false);
+      setShowAdminPortal(true);
+      triggerToast("👑 Logged in as Admin (Vallapureddy Tharun Reddy)!");
+      return;
+    }
+
+    // 2. Resolve Email if student entered Username instead of Email
+    let resolvedEmail = rawInput;
+    if (!resolvedEmail.includes("@")) {
+      try {
+        const profilesCol = collection(db, "profiles");
+        const qUser = query(profilesCol, where("username", "==", rawInput));
+        const snapUser = await getDocs(qUser);
+
+        if (!snapUser.empty) {
+          const docData = snapUser.docs[0].data();
+          if (docData.email) {
+            resolvedEmail = docData.email;
+          }
+        } else {
+          const qName = query(profilesCol, where("name", "==", rawInput));
+          const snapName = await getDocs(qName);
+          if (!snapName.empty) {
+            const docData = snapName.docs[0].data();
+            if (docData.email) {
+              resolvedEmail = docData.email;
+            }
+          }
+        }
+      } catch (err) {
+        console.warn("[Auth] Username lookup error:", err);
+      }
+    }
+
+    if (!resolvedEmail || !resolvedEmail.includes("@")) {
+      setAuthError("Could not find an account with that username. Please enter your email address.");
+      return;
+    }
+
     const targetUsername =
-      authUsername.trim() ||
+      cleanUsername ||
       player.username ||
-      (authEmail.includes("@") ? authEmail.split("@")[0] : "") ||
+      resolvedEmail.split("@")[0] ||
       "Adventurer";
-    const targetUpi = authUpiId || player.upiId || "";
+    const targetUpi = authUpiId.trim();
 
     const userProfile: PlayerState = {
       ...player,
       username: targetUsername,
       name: targetUsername,
-      upiId: targetUpi,
+      email: resolvedEmail,
+      mobileNumber: "", // Student's own mobile
+      upiId: targetUpi, // Student's own upi
       isLoggedIn: true,
+      isAdmin: false, // Strictly regular user
     };
 
     try {
       let userCred;
       if (authMode === "signup") {
-        userCred = await createUserWithEmailAndPassword(auth, authEmail, authPassword);
+        userCred = await createUserWithEmailAndPassword(auth, resolvedEmail, cleanPassword);
         if (userCred.user) {
           await syncProfileToFirestore(userCred.user.uid, {
             username: targetUsername,
             name: targetUsername,
-            mobileNumber: player.mobileNumber || "",
+            email: resolvedEmail,
+            mobileNumber: "",
             upiId: targetUpi,
             xp: player.intellectXp,
             hp: player.hp,
@@ -399,10 +547,12 @@ export const App: React.FC = () => {
             gold: player.coins,
             level: calculateLevel(player.intellectXp),
             isDead: player.isDead,
+            avatarSeed: player.avatarSeed,
+            focusMode: player.focusMode,
           });
         }
       } else {
-        userCred = await signInWithEmailAndPassword(auth, authEmail, authPassword);
+        userCred = await signInWithEmailAndPassword(auth, resolvedEmail, cleanPassword);
         if (userCred.user) {
           const cloudProfile = await loadProfileFromFirestore(userCred.user.uid);
           if (cloudProfile) {
@@ -413,12 +563,38 @@ export const App: React.FC = () => {
             userProfile.isDead = cloudProfile.isDead ?? player.isDead;
             userProfile.username = cloudProfile.username || cloudProfile.name || targetUsername;
             userProfile.name = cloudProfile.name || cloudProfile.username || targetUsername;
+            userProfile.mobileNumber = cloudProfile.mobileNumber || "";
             userProfile.upiId = cloudProfile.upiId || targetUpi;
           }
         }
       }
     } catch (err: any) {
-      console.warn("[Auth Fallback] Verified local user session activated:", err?.message);
+      const code = err?.code || "";
+      if (
+        code.includes("email-already-in-use") ||
+        code.includes("wrong-password") ||
+        code.includes("user-not-found") ||
+        code.includes("invalid-credential") ||
+        code.includes("weak-password") ||
+        code.includes("invalid-email")
+      ) {
+        let msg = err?.message || "Authentication failed.";
+        if (code.includes("email-already-in-use")) {
+          msg = "This email is already registered. Please click 'Already have an account? Sign In'.";
+        } else if (code.includes("weak-password")) {
+          msg = "Password should be at least 6 characters.";
+        } else if (
+          code.includes("wrong-password") ||
+          code.includes("user-not-found") ||
+          code.includes("invalid-credential")
+        ) {
+          msg = "Invalid email or password. Please check your credentials.";
+        }
+        setAuthError(msg);
+        return;
+      }
+
+      console.warn("[Auth Fallback] Local user session activated:", err?.message);
     }
 
     await persistPlayer(userProfile);
@@ -499,8 +675,8 @@ export const App: React.FC = () => {
               />
             )}
             <input
-              type="email"
-              placeholder="Email address"
+              type="text"
+              placeholder={authMode === "signin" ? "Email address or Username" : "Email address"}
               value={authEmail}
               onChange={(e) => setAuthEmail(e.target.value)}
               className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-emerald-500"
@@ -534,7 +710,7 @@ export const App: React.FC = () => {
               className="w-full text-center text-[11px] text-slate-400 hover:text-slate-200 cursor-pointer pt-1"
             >
               {authMode === "signin"
-                ? "Need an account? Sign Up with Username"
+                ? "Need an account? Sign Up"
                 : "Already have an account? Sign In"}
             </button>
           </form>
@@ -556,7 +732,11 @@ export const App: React.FC = () => {
       <header className="px-4 py-3.5 bg-gradient-to-b from-slate-900 to-slate-950 border-b border-slate-800/80">
         <div className="flex items-center gap-3">
           {/* Avatar Ring */}
-          <div className="relative group cursor-pointer" onClick={handleRandomizeAvatar} title="Click to swap avatar skin">
+          <div
+            className="relative group cursor-pointer"
+            onClick={() => setShowAuthModal(true)}
+            title="Click to upload profile photo or change settings"
+          >
             <div
               className={`w-14 h-14 rounded-xl p-0.5 transition-all duration-300 ${
                 player.isDead
@@ -567,7 +747,7 @@ export const App: React.FC = () => {
               }`}
             >
               <img
-                src={avatarUrl}
+                src={player.customAvatarUrl || avatarUrl}
                 alt="Adventurer Avatar"
                 className="w-full h-full rounded-[10px] object-cover bg-slate-900"
               />
@@ -616,6 +796,17 @@ export const App: React.FC = () => {
                 >
                   {currentUser ? "☁️" : "🔑"}
                 </button>
+
+                {/* Admin Portal Button strictly for verified Admin session */}
+                {player.isAdmin && (player.email?.toLowerCase() === "vallapureddytharunreddy6281@gmail.com" || currentUser?.email?.toLowerCase() === "vallapureddytharunreddy6281@gmail.com") && (
+                  <button
+                    onClick={() => setShowAdminPortal(true)}
+                    className="text-[11px] px-1.5 py-0.5 rounded font-bold bg-amber-950/80 hover:bg-amber-900 text-amber-300 border border-amber-500/40 cursor-pointer shadow-sm"
+                    title="Unlock Admin Control Panel"
+                  >
+                    👑 Admin
+                  </button>
+                )}
               </div>
             </div>
 
@@ -654,26 +845,6 @@ export const App: React.FC = () => {
         </div>
       </header>
 
-      {/* Developer Monetization Banner (Displayed Automatically when Extension Opens for Ad Revenue) */}
-      <div className="bg-slate-950 border-b border-slate-800/80 px-3 py-1.5 flex items-center justify-between text-[10px] shrink-0">
-        <div className="flex items-center gap-1.5 text-slate-300">
-          <span className="px-1 py-0.2 rounded bg-amber-950 text-amber-400 font-mono font-bold text-[9px] border border-amber-800/50">
-            AD
-          </span>
-          <span className="font-medium truncate max-w-[210px] text-slate-300">
-            Sponsored: JetBrains IDE & AWS Cloud Student Pass
-          </span>
-        </div>
-        <a
-          href="https://aws.amazon.com/education/aws-educate/"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-[9px] font-bold text-amber-400 hover:underline shrink-0"
-        >
-          Visit Sponsor ➔
-        </a>
-      </div>
-
       {/* Cyber Tab Bar Navigation */}
       <nav className="flex bg-slate-900/90 border-b border-slate-800/80 backdrop-blur-md">
         {(
@@ -682,7 +853,6 @@ export const App: React.FC = () => {
             { id: "goals", label: "Quests", icon: "📜" },
             { id: "training", label: "Games", icon: "🧩" },
             { id: "bounties", label: "Bounties", icon: "🎯" },
-            { id: "ads", label: "Ads", icon: "📺" },
           ] as const
         ).map((t) => (
           <button
@@ -789,15 +959,26 @@ export const App: React.FC = () => {
                   <span>📜</span> Quest Board
                 </h2>
                 <p className="text-[11px] text-slate-400">
-                  Complete goals for +500 Gold & +50 HP
+                  Complete goals for +125 Gold, +25 HP & +25 XP
                 </p>
               </div>
-              <button
-                onClick={() => setShowAddGoal(!showAddGoal)}
-                className="px-2.5 py-1 text-xs font-bold rounded-lg bg-emerald-600 hover:bg-emerald-500 text-slate-950 transition-all shadow-md"
-              >
-                {showAddGoal ? "Cancel" : "+ New Quest"}
-              </button>
+              <div className="flex items-center gap-1.5">
+                {goals.length > 0 && (
+                  <button
+                    onClick={handleClearAllGoals}
+                    className="px-2 py-1 text-xs font-bold rounded-lg bg-rose-950/80 hover:bg-rose-900 text-rose-300 border border-rose-800/60 transition-all cursor-pointer"
+                    title="Remove all active quests"
+                  >
+                    🧹 Clear All
+                  </button>
+                )}
+                <button
+                  onClick={() => setShowAddGoal(!showAddGoal)}
+                  className="px-2.5 py-1 text-xs font-bold rounded-lg bg-emerald-600 hover:bg-emerald-500 text-slate-950 transition-all shadow-md cursor-pointer"
+                >
+                  {showAddGoal ? "Cancel" : "+ New Quest"}
+                </button>
+              </div>
             </div>
 
             {showAddGoal && (
@@ -823,6 +1004,37 @@ export const App: React.FC = () => {
                   onChange={(e) => setNewGoalDesc(e.target.value)}
                   className="w-full px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-emerald-500"
                 />
+                <div>
+                  <label className="text-[10px] font-semibold text-slate-300">
+                    Required Time / Duration (Minutes):
+                  </label>
+                  <input
+                    type="number"
+                    min="5"
+                    max="480"
+                    placeholder="Duration in Minutes (e.g. 30, 60, 120)"
+                    value={newGoalMinutes}
+                    onChange={(e) => setNewGoalMinutes(e.target.value)}
+                    className="w-full px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-xs text-emerald-300 font-bold focus:outline-none focus:border-emerald-500 mt-0.5"
+                    required
+                  />
+
+                  {/* Mathematical Reward Scaling Preview */}
+                  {(() => {
+                    const previewMins = Math.max(5, parseInt(newGoalMinutes) || 30);
+                    const rewards = calculateQuestRewards(previewMins);
+                    return (
+                      <div className="p-2 rounded-lg bg-slate-950/90 border border-emerald-500/30 flex justify-between items-center text-[10px] mt-1">
+                        <span className="text-slate-400 font-medium">Scaled Rewards ({previewMins}m):</span>
+                        <div className="flex items-center gap-2 font-bold font-mono">
+                          <span className="text-emerald-400">+{rewards.hp} HP</span>
+                          <span className="text-amber-400">+{rewards.gold} Gold</span>
+                          <span className="text-purple-400">+{rewards.xp} XP</span>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
                 <div className="flex items-center gap-3 text-xs">
                   <label className="flex items-center gap-1 cursor-pointer">
                     <input
@@ -855,10 +1067,20 @@ export const App: React.FC = () => {
             )}
 
             <div className="space-y-2">
-              {goals.map((goal) => {
+              {goals.length === 0 ? (
+                <div className="p-6 rounded-xl border border-slate-800/80 bg-slate-900/40 text-center space-y-2">
+                  <div className="text-3xl">📜</div>
+                  <div className="text-xs font-bold text-slate-300">No Active Quests</div>
+                  <p className="text-[11px] text-slate-400 max-w-[220px] mx-auto">
+                    Click <strong className="text-emerald-400">+ New Quest</strong> above to create your personal daily or weekly focus goal!
+                  </p>
+                </div>
+              ) : (
+                goals.map((goal) => {
                 const target = goal.targetMinutes || 30;
                 const progress = goal.progressMinutes || 0;
                 const percent = Math.min(100, Math.round((progress / target) * 100));
+                const cardRewards = calculateQuestRewards(target);
 
                 return (
                   <div
@@ -893,6 +1115,17 @@ export const App: React.FC = () => {
                             <span className="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-indigo-950 text-indigo-300 border border-indigo-800/50">
                               {goal.goalType}
                             </span>
+                            <button
+                              type="button"
+                              onClick={(ev) => {
+                                ev.stopPropagation();
+                                handleDeleteGoal(goal.id);
+                              }}
+                              className="text-slate-400 hover:text-rose-400 p-0.5 text-[11px] font-bold cursor-pointer ml-1"
+                              title="Delete Quest"
+                            >
+                              🗑️
+                            </button>
                           </div>
                         </div>
                         {goal.description && (
@@ -919,80 +1152,222 @@ export const App: React.FC = () => {
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-3 mt-2 text-[10px]">
-                          <span className="text-emerald-400 font-semibold">+50 HP</span>
-                          <span className="text-amber-400 font-semibold">+500 Gold</span>
-                          <span className="text-purple-400 font-semibold">+50 XP</span>
+                        <div className="flex items-center justify-between mt-2 text-[10px]">
+                          <div className="flex items-center gap-2.5 font-bold font-mono">
+                            <span className="text-emerald-400">+{cardRewards.hp} HP</span>
+                            <span className="text-amber-400">+{cardRewards.gold} Gold</span>
+                            <span className="text-purple-400">+{cardRewards.xp} XP</span>
+                          </div>
+                          <span className="text-slate-500 font-mono text-[9px]">({target}m time-scaled)</span>
                         </div>
                       </div>
                     </div>
                   </div>
                 );
-              })}
+              }))}
             </div>
           </section>
         ) : tab === "training" ? (
-          <GamesModule player={player} onGainXp={handleGiveTrainingXp} />
+          <AiGamesModule player={player} onGainXp={handleGiveTrainingXp} />
         ) : tab === "bounties" ? (
           <section className="space-y-3">
-            <div className="flex justify-between items-center">
-              <div>
-                <h2 className="text-sm font-bold text-slate-100 flex items-center gap-1.5">
-                  <span>🎯</span> GitHub Bounties
-                </h2>
-                <p className="text-[11px] text-slate-400">
-                  Real open-source issues labeled <code>good-first-issue</code>
-                </p>
+            {/* Header & Sub-Nav Switcher */}
+            <div className="space-y-2">
+              <div className="flex justify-between items-center">
+                <div>
+                  <h2 className="text-sm font-bold text-slate-100 flex items-center gap-1.5">
+                    <span>🎯</span> GitHub Bounties Hub
+                  </h2>
+                  <p className="text-[11px] text-slate-400">
+                    Official Security Rewards & Funded Open-Source Issue Bounties
+                  </p>
+                </div>
               </div>
-              <button
-                onClick={loadBounties}
-                className="px-2.5 py-1 text-xs font-bold rounded-lg bg-emerald-600 text-slate-950"
-              >
-                {bountiesLoading ? "Fetching..." : "Refresh"}
-              </button>
+
+              {/* Sub-Category Switcher */}
+              <div className="grid grid-cols-2 gap-1 p-1 bg-slate-900 rounded-xl border border-slate-800 text-xs">
+                <button
+                  onClick={() => setBountyCategory("official")}
+                  className={`py-1.5 px-2 rounded-lg font-bold transition-all text-center ${
+                    bountyCategory === "official"
+                      ? "bg-gradient-to-r from-emerald-500 to-teal-600 text-slate-950 shadow"
+                      : "text-slate-400 hover:text-slate-200"
+                  }`}
+                >
+                  🛡️ Official Bug Bounty
+                </button>
+                <button
+                  onClick={() => {
+                    setBountyCategory("opensource");
+                    if (bounties.length === 0) loadBounties();
+                  }}
+                  className={`py-1.5 px-2 rounded-lg font-bold transition-all text-center ${
+                    bountyCategory === "opensource"
+                      ? "bg-gradient-to-r from-emerald-500 to-teal-600 text-slate-950 shadow"
+                      : "text-slate-400 hover:text-slate-200"
+                  }`}
+                >
+                  💸 Open Source Bounties
+                </button>
+              </div>
             </div>
 
-            <div className="space-y-2 max-h-[380px] overflow-y-auto pr-1">
-              {bounties.map((issue) => (
-                <div
-                  key={issue.id}
-                  className="p-3 rounded-xl border border-slate-800 bg-slate-900/60 glass-card space-y-1.5"
-                >
-                  <div className="text-xs font-bold text-slate-100 line-clamp-2">
-                    {issue.title}
+            {/* View 1: Official GitHub Bug Bounty Program */}
+            {bountyCategory === "official" ? (
+              <div className="space-y-2.5 max-h-[380px] overflow-y-auto pr-1">
+                {/* VIP & Public Tier Summary Card */}
+                <div className="p-3 rounded-xl border border-amber-500/30 bg-amber-950/20 text-xs space-y-1.5">
+                  <div className="font-extrabold text-amber-300 flex items-center gap-1">
+                    <span>👑 Official GitHub Bug Bounty Program</span>
                   </div>
-                  <div className="text-[10px] font-mono text-purple-400">
-                    📂 {issue.repository_url?.split("/").slice(-2).join("/")}
+                  <p className="text-[11px] text-slate-300 leading-tight">
+                    GitHub pays fixed public rewards from <strong>$250 to $10,000</strong>, plus an invite-only VIP tier paying up to <strong>$30,000+</strong> for security bug reports.
+                  </p>
+                </div>
+
+                {/* Bounty Tier Payout Table Grid */}
+                <div className="space-y-1.5">
+                  <div className="text-[10px] uppercase font-bold text-slate-400">
+                    Payout Rates by Vulnerability Severity
                   </div>
-                  <div className="flex justify-between items-center pt-1 border-t border-slate-800/60">
-                    <span className="text-[10px] text-purple-300 font-semibold">
-                      Reward: +10 XP & Gold
-                    </span>
-                    <button
-                      onClick={() => handleViewIssue(issue.html_url)}
-                      className="px-2 py-0.5 text-[11px] font-bold text-emerald-400 hover:underline"
-                    >
-                      Inspect Quest ➔
-                    </button>
+
+                  {/* Low Severity */}
+                  <div className="p-2.5 rounded-xl border border-slate-800 bg-slate-900/80 flex justify-between items-center text-xs">
+                    <div>
+                      <div className="font-bold text-emerald-400 flex items-center gap-1">
+                        <span>🟢 Low Severity</span>
+                      </div>
+                      <div className="text-[10px] text-slate-400">Minor security disclosures</div>
+                    </div>
+                    <div className="text-right font-mono">
+                      <div className="font-bold text-emerald-300">$250 <span className="text-[9px] text-slate-400 font-sans">(Public)</span></div>
+                      <div className="text-[10px] text-amber-400 font-semibold">$1,000 <span className="text-[9px] text-slate-400 font-sans">(VIP)</span></div>
+                    </div>
+                  </div>
+
+                  {/* Medium Severity */}
+                  <div className="p-2.5 rounded-xl border border-slate-800 bg-slate-900/80 flex justify-between items-center text-xs">
+                    <div>
+                      <div className="font-bold text-cyan-400 flex items-center gap-1">
+                        <span>🟡 Medium Severity</span>
+                      </div>
+                      <div className="text-[10px] text-slate-400">Moderate impact vulnerabilities</div>
+                    </div>
+                    <div className="text-right font-mono">
+                      <div className="font-bold text-cyan-300">$2,000 <span className="text-[9px] text-slate-400 font-sans">(Public)</span></div>
+                      <div className="text-[10px] text-amber-400 font-semibold">$7,500 <span className="text-[9px] text-slate-400 font-sans">(VIP)</span></div>
+                    </div>
+                  </div>
+
+                  {/* High Severity */}
+                  <div className="p-2.5 rounded-xl border border-slate-800 bg-slate-900/80 flex justify-between items-center text-xs">
+                    <div>
+                      <div className="font-bold text-orange-400 flex items-center gap-1">
+                        <span>🟠 High Severity</span>
+                      </div>
+                      <div className="text-[10px] text-slate-400">Privilege escalation & RCE</div>
+                    </div>
+                    <div className="text-right font-mono">
+                      <div className="font-bold text-orange-300">$5,000 <span className="text-[9px] text-slate-400 font-sans">(Public)</span></div>
+                      <div className="text-[10px] text-amber-400 font-semibold">$20,000 <span className="text-[9px] text-slate-400 font-sans">(VIP)</span></div>
+                    </div>
+                  </div>
+
+                  {/* Critical Severity */}
+                  <div className="p-2.5 rounded-xl border border-rose-500/40 bg-rose-950/20 flex justify-between items-center text-xs">
+                    <div>
+                      <div className="font-bold text-rose-400 flex items-center gap-1">
+                        <span>🔴 Critical Severity</span>
+                      </div>
+                      <div className="text-[10px] text-slate-400">Full system exploit / data breach</div>
+                    </div>
+                    <div className="text-right font-mono">
+                      <div className="font-bold text-rose-300">$10,000 <span className="text-[9px] text-slate-400 font-sans">(Public)</span></div>
+                      <div className="text-[10px] text-amber-300 font-extrabold">$30,000+ <span className="text-[9px] text-slate-400 font-sans">(VIP)</span></div>
+                    </div>
                   </div>
                 </div>
-              ))}
-              {!bountiesLoading && bounties.length === 0 && (
-                <div className="text-center py-8 text-xs text-slate-500 space-y-2">
-                  <p>No bounties loaded yet.</p>
+
+                <button
+                  onClick={() => handleViewIssue("https://bounty.github.com")}
+                  className="w-full py-2 text-xs font-bold rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 text-slate-950 cursor-pointer hover:opacity-95 transition-all shadow-md mt-1"
+                >
+                  Submit Bug Report to GitHub Security 🛡️
+                </button>
+              </div>
+            ) : (
+              /* View 2: Open Source Issue Bounties (Algora & BountyHub) */
+              <div className="space-y-2.5 max-h-[380px] overflow-y-auto pr-1">
+                {/* Algora & BountyHub Rules Card */}
+                <div className="p-3 rounded-xl border border-cyan-500/30 bg-cyan-950/20 text-xs space-y-1.5">
+                  <div className="flex justify-between items-center">
+                    <span className="font-extrabold text-cyan-300 flex items-center gap-1">
+                      <span>⚡ Algora & BountyHub Escrow Integrations</span>
+                    </span>
+                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-400 font-bold border border-emerald-800">
+                      Stripe Funded
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-300 leading-tight">
+                    Third-party platforms like <strong>Algora</strong> and <strong>BountyHub</strong> integrate directly with GitHub issues to let maintainers fund code fixes via Stripe.
+                  </p>
+                  <div className="p-2 rounded-lg bg-slate-950/80 border border-slate-800 text-[10px] text-amber-300 font-mono">
+                    🔒 Payout Rule: Funds are held in escrow & paid directly upon PR approval & merge by repo maintainers.
+                  </div>
+                </div>
+
+                {/* Live Issues Header */}
+                <div className="flex justify-between items-center text-xs">
+                  <span className="font-bold text-slate-300">Live Funded Issue Bounties</span>
                   <button
                     onClick={loadBounties}
-                    className="px-3 py-1 text-xs font-bold rounded-lg bg-emerald-600 text-slate-950"
+                    className="px-2 py-0.5 text-[10px] font-bold rounded bg-slate-800 hover:bg-slate-700 text-emerald-400"
                   >
-                    Load Quest Board
+                    {bountiesLoading ? "Refreshing..." : "🔄 Refresh"}
                   </button>
                 </div>
-              )}
-            </div>
+
+                <div className="space-y-2">
+                  {bounties.map((issue) => (
+                    <div
+                      key={issue.id}
+                      className="p-3 rounded-xl border border-slate-800 bg-slate-900/60 glass-card space-y-1.5"
+                    >
+                      <div className="text-xs font-bold text-slate-100 line-clamp-2">
+                        {issue.title}
+                      </div>
+                      <div className="text-[10px] font-mono text-purple-400">
+                        📂 {issue.repository_url?.split("/").slice(-2).join("/")}
+                      </div>
+                      <div className="flex justify-between items-center pt-1.5 border-t border-slate-800/60 text-[10px]">
+                        <span className="text-emerald-400 font-semibold flex items-center gap-1">
+                          <span>💰 Escrow Funded PR</span>
+                        </span>
+                        <button
+                          onClick={() => handleViewIssue(issue.html_url)}
+                          className="px-2 py-0.5 text-[10px] font-bold rounded bg-emerald-950 text-emerald-300 border border-emerald-800/60 hover:bg-emerald-900 transition-all"
+                        >
+                          Solve & Submit PR ➔
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  {!bountiesLoading && bounties.length === 0 && (
+                    <div className="text-center py-6 text-xs text-slate-500 space-y-2">
+                      <p>No bounties loaded yet.</p>
+                      <button
+                        onClick={loadBounties}
+                        className="px-3 py-1 text-xs font-bold rounded-lg bg-emerald-600 text-slate-950"
+                      >
+                        Load Live Bounties
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </section>
-        ) : (
-          <AdRewardsModule player={player} onGainReward={handleGainAdReward} />
-        )}
+        ) : null}
       </main>
 
       {/* User Profile & Firebase Cloud Sync Drawer Modal */}
@@ -1017,6 +1392,53 @@ export const App: React.FC = () => {
                   Profile Account Details
                 </div>
                 <div className="space-y-2">
+                  {/* Custom Profile Photo Upload */}
+                  <div>
+                    <div className="flex justify-between items-center text-[10px] font-semibold text-slate-300">
+                      <span>Profile Photo:</span>
+                      {player.customAvatarUrl && (
+                        <button
+                          type="button"
+                          onClick={() => setPlayer((prev) => ({ ...prev, customAvatarUrl: "" }))}
+                          className="text-[9px] text-rose-400 hover:underline cursor-pointer"
+                        >
+                          Reset to RPG Skin
+                        </button>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 mt-1">
+                      <div className="w-10 h-10 rounded-lg overflow-hidden border border-slate-700 bg-slate-900 shrink-0">
+                        <img
+                          src={player.customAvatarUrl || avatarUrl}
+                          alt="Avatar Preview"
+                          className="w-full h-full object-cover"
+                        />
+                      </div>
+                      <label className="flex-1 px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs text-slate-300 font-semibold cursor-pointer hover:border-emerald-500 hover:text-emerald-400 text-center transition-all">
+                        <span>📷 Choose Photo...</span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file) {
+                              const reader = new FileReader();
+                              reader.onload = (ev) => {
+                                const base64 = ev.target?.result as string;
+                                if (base64) {
+                                  setPlayer((prev) => ({ ...prev, customAvatarUrl: base64 }));
+                                  triggerToast("📷 Profile photo uploaded!");
+                                }
+                              };
+                              reader.readAsDataURL(file);
+                            }
+                          }}
+                        />
+                      </label>
+                    </div>
+                  </div>
+
                   <div>
                     <label className="text-[10px] font-semibold text-slate-300">
                       Your Username:
@@ -1030,6 +1452,22 @@ export const App: React.FC = () => {
                       }}
                       placeholder="Username (e.g. TharunReddy)"
                       className="w-full px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs text-emerald-300 font-bold focus:outline-none focus:border-emerald-500 mt-0.5"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] font-semibold text-slate-300">
+                      Mobile Number:
+                    </label>
+                    <input
+                      type="tel"
+                      value={player.mobileNumber || ""}
+                      onChange={(e) => {
+                        const newMobile = e.target.value;
+                        setPlayer((prev) => ({ ...prev, mobileNumber: newMobile }));
+                      }}
+                      placeholder="e.g. 6281752093"
+                      className="w-full px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs text-cyan-300 font-mono focus:outline-none focus:border-cyan-500 mt-0.5"
                     />
                   </div>
 
@@ -1061,6 +1499,19 @@ export const App: React.FC = () => {
                   Save Profile Changes
                 </button>
               </div>
+
+              {/* Admin Portal Shortcut strictly for verified Admin session */}
+              {player.isAdmin && (player.email?.toLowerCase() === "vallapureddytharunreddy6281@gmail.com" || currentUser?.email?.toLowerCase() === "vallapureddytharunreddy6281@gmail.com") && (
+                <button
+                  onClick={() => {
+                    setShowAuthModal(false);
+                    setShowAdminPortal(true);
+                  }}
+                  className="w-full py-2 text-xs font-extrabold rounded-xl bg-gradient-to-r from-amber-500 via-orange-500 to-amber-600 text-slate-950 cursor-pointer shadow-lg hover:opacity-95 transition-all"
+                >
+                  👑 Open Admin Oversight Portal
+                </button>
+              )}
 
               {currentUser ? (
                 <div className="p-2.5 rounded-xl bg-emerald-950/30 border border-emerald-500/30 flex justify-between items-center text-xs">
@@ -1217,6 +1668,13 @@ export const App: React.FC = () => {
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {/* Admin Portal Drawer Modal */}
+      {showAdminPortal && (
+        <div className="absolute inset-0 bg-slate-950/90 backdrop-blur-md z-50 overflow-y-auto p-3">
+          <AdminPortalModule onClose={() => setShowAdminPortal(false)} />
         </div>
       )}
     </div>
@@ -1416,142 +1874,4 @@ const SpeedMathGame: React.FC<{ onBack: () => void; onWin: () => void }> = ({
   );
 };
 
-const AdRewardsModule: React.FC<{
-  player: PlayerState;
-  onGainReward: (gold: number, hp: number) => void;
-}> = ({ player, onGainReward }) => {
-  const [adState, setAdState] = useState<"idle" | "watching" | "completed">("idle");
-  const [countdown, setCountdown] = useState(5);
-  const [adRevenue, setAdRevenue] = useState(2.45); // Platform ad revenue counter ($)
 
-  const handleWatchAd = () => {
-    setAdState("watching");
-    setCountdown(5);
-
-    const timer = setInterval(() => {
-      setCountdown((prev) => {
-        if (prev <= 1) {
-          clearInterval(timer);
-          setAdState("completed");
-          onGainReward(100, 20);
-          setAdRevenue((r) => r + 0.05); // $0.05 ad CPM revenue per impression
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-  };
-
-  return (
-    <div className="space-y-3">
-      {/* Header Banner */}
-      <div className="p-4 rounded-xl border border-amber-500/30 bg-gradient-to-r from-amber-950/40 to-slate-900 glass-card">
-        <div className="flex justify-between items-center">
-          <div>
-            <h2 className="text-sm font-bold text-amber-300 flex items-center gap-1.5">
-              <span>📺</span> Rewarded Ad Chamber
-            </h2>
-            <p className="text-[11px] text-slate-300 mt-0.5">
-              Watch short developer ads to earn Gold & restore HP while supporting Focus Quest!
-            </p>
-          </div>
-          <div className="text-right">
-            <div className="text-[10px] text-slate-400">Platform Ad Revenue</div>
-            <div className="text-xs font-mono font-bold text-emerald-400">
-              ${adRevenue.toFixed(2)} USD
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Main Rewarded Ad Unit Card */}
-      <div className="p-4 rounded-xl border border-slate-800 bg-slate-900/80 glass-card text-center space-y-3">
-        <div className="w-12 h-12 rounded-full bg-amber-500/10 border border-amber-500/30 flex items-center justify-center mx-auto text-2xl">
-          🎬
-        </div>
-        <div>
-          <h3 className="text-xs font-bold text-slate-100">
-            Sponsored Developer Video Impression
-          </h3>
-          <p className="text-[11px] text-slate-400 mt-1">
-            Reward: <span className="text-amber-400 font-bold">+100 Gold</span> &{" "}
-            <span className="text-emerald-400 font-bold">+20 HP</span>
-          </p>
-        </div>
-
-        {adState === "idle" ? (
-          <button
-            onClick={handleWatchAd}
-            className="w-full py-2 text-xs font-bold rounded-lg bg-gradient-to-r from-amber-500 to-amber-600 text-slate-950 shadow-lg hover:from-amber-400 hover:to-amber-500 transition-all"
-          >
-            Watch 5s Ad (+100 Gold)
-          </button>
-        ) : adState === "watching" ? (
-          <div className="py-2.5 px-4 rounded-lg bg-slate-950 border border-amber-500/40 text-amber-400 text-xs font-bold flex items-center justify-center gap-2">
-            <div className="w-4 h-4 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
-            <span>Viewing Developer Sponsor Ad... ({countdown}s)</span>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            <div className="p-2 rounded-lg bg-emerald-950/60 border border-emerald-500/40 text-emerald-300 text-xs font-bold">
-              🎉 Reward Claimed! +100 Gold & +20 HP added!
-            </div>
-            <button
-              onClick={() => setAdState("idle")}
-              className="text-[11px] text-amber-400 hover:underline font-semibold"
-            >
-              Watch Another Ad
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* Sponsored Partner Offers */}
-      <div className="space-y-2">
-        <h3 className="text-xs font-bold text-slate-300 uppercase tracking-wider px-1">
-          Sponsored Partner Offers (+200 Gold Each)
-        </h3>
-
-        {[
-          {
-            title: "GitHub Copilot Developer Trial",
-            desc: "Explore AI pair programming for developers.",
-            reward: "+200 Gold",
-            link: "https://github.com/features/copilot",
-          },
-          {
-            title: "LeetCode Premium Study Pass",
-            desc: "Unlock top tech interview questions & solutions.",
-            reward: "+200 Gold",
-            link: "https://leetcode.com/subscribe/",
-          },
-          {
-            title: "Coursera Professional Certificates",
-            desc: "Earn accredited computer science certificates.",
-            reward: "+200 Gold",
-            link: "https://coursera.org",
-          },
-        ].map((offer, idx) => (
-          <div
-            key={idx}
-            className="p-3 rounded-xl border border-slate-800 bg-slate-900/60 hover:border-amber-500/50 transition-all glass-card flex justify-between items-center"
-          >
-            <div>
-              <div className="text-xs font-bold text-slate-200">{offer.title}</div>
-              <div className="text-[10px] text-slate-400">{offer.desc}</div>
-            </div>
-            <button
-              onClick={() => {
-                onGainReward(200, 30);
-                window.open(offer.link, "_blank");
-              }}
-              className="px-2.5 py-1 text-[10px] font-bold rounded bg-gradient-to-r from-amber-500 to-amber-600 text-slate-950 shrink-0 cursor-pointer"
-            >
-              {offer.reward}
-            </button>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-};

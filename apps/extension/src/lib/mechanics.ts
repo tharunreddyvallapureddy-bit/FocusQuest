@@ -42,3 +42,27 @@ export function getDiceBearAvatar(seed: string): string {
   const safeSeed = encodeURIComponent(seed || "hero");
   return `https://api.dicebear.com/7.x/adventurer/svg?seed=${safeSeed}`;
 }
+
+/**
+ * Dynamic Mathematical Algorithm for Quest Rewards based on Duration:
+ * Baseline: 30 minutes -> +25 HP, +125 Gold, +25 XP
+ * Scaling Ratio r = targetMinutes / 30
+ * Scaled Rewards:
+ *   HP = max(5, round(25 * r))
+ *   Gold = max(25, round(125 * r))
+ *   XP = max(5, round(25 * r))
+ */
+export function calculateQuestRewards(targetMinutes: number = 30): {
+  hp: number;
+  gold: number;
+  xp: number;
+} {
+  const safeMins = Math.max(5, targetMinutes);
+  const ratio = safeMins / 30;
+
+  const hp = Math.max(5, Math.round(25 * ratio));
+  const gold = Math.max(25, Math.round(125 * ratio));
+  const xp = Math.max(5, Math.round(25 * ratio));
+
+  return { hp, gold, xp };
+}

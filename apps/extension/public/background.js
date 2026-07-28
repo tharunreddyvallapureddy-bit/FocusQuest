@@ -34,38 +34,7 @@ const DEFAULT_BLACKLIST = [
   "facebook.com",
 ];
 
-const DEFAULT_GOALS = [
-  {
-    id: "react-2h",
-    title: "Deep Work: React & TypeScript",
-    description: "Build or study focused for 120 minutes.",
-    goalType: "daily",
-    targetMinutes: 120,
-    progressMinutes: 0,
-    isCompleted: false,
-    autoVerified: false,
-  },
-  {
-    id: "algo-30m",
-    title: "Algorithm Mastery: Solve 3 Problems",
-    description: "Practice on LeetCode, HackerRank or Codeforces.",
-    goalType: "daily",
-    targetMinutes: 30,
-    progressMinutes: 0,
-    isCompleted: false,
-    autoVerified: false,
-  },
-  {
-    id: "clean-code-weekly",
-    title: "Weekly Quest: Ship a Full Feature",
-    description: "Complete a full module refactor or new feature.",
-    goalType: "weekly",
-    targetMinutes: 300,
-    progressMinutes: 0,
-    isCompleted: false,
-    autoVerified: false,
-  },
-];
+const DEFAULT_GOALS = [];
 
 const BASE_MAX_HP = 300;
 
@@ -94,10 +63,11 @@ function initializeState() {
       const initialPlayer = result.playerState || {
         hp: 300,
         maxHp: BASE_MAX_HP,
-        coins: 100,
+        coins: 0,
         intellectXp: 0,
         isDead: false,
         avatarSeed: "AdventurerHero",
+        customAvatarUrl: "",
         focusMode: true,
       };
 
@@ -208,6 +178,20 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
             isDead = false;
           }
 
+          const todayStr = new Date().toISOString().split("T")[0];
+
+          // 12:00 AM Midnight Expiration Pruning for Uncompleted Daily Quests
+          currentGoals = currentGoals.filter((g) => {
+            if (g.goalType === "daily") {
+              const goalDate = g.createdDate || todayStr;
+              if (goalDate < todayStr && !g.isCompleted) {
+                console.log(`[Focus Quest] Daily quest expired at midnight (00:00): ${g.title}`);
+                return false; // Remove expired daily quest (no rewards given)
+              }
+            }
+            return true;
+          });
+
           // AUTOMATIC BACKGROUND GOAL VERIFICATION & TICKING
           currentGoals = currentGoals.map((g) => {
             if (g.isCompleted) return g;
@@ -216,17 +200,23 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
             const nextProgress = (g.progressMinutes || 0) + 1;
 
             if (nextProgress >= target) {
-              coins += 500; // Award 500 Gold per completed goal
-              hp = Math.min(maxHp, hp + 50);
-              intellectXp += 50;
+              // Mathematical Reward Scaling Algorithm (Baseline 30m: +25 HP, +125 Gold, +25 XP)
+              const ratio = Math.max(5, target) / 30;
+              const rewardHp = Math.max(5, Math.round(25 * ratio));
+              const rewardGold = Math.max(25, Math.round(125 * ratio));
+              const rewardXp = Math.max(5, Math.round(25 * ratio));
+
+              coins += rewardGold;
+              hp = Math.min(maxHp, hp + rewardHp);
+              intellectXp += rewardXp;
 
               // Send Chrome Notification for Auto-Verification
               if (chrome.notifications) {
                 chrome.notifications.create({
                   type: "basic",
-                  iconUrl: "icons/icon48.png",
+                  iconUrl: "icons/icon-48.png",
                   title: "🛡️ Quest Auto-Verified & Completed!",
-                  message: `Quest "${g.title}" was verified by background study tracking! +500 Gold awarded.`,
+                  message: `Quest "${g.title}" verified by background study tracking! +${rewardGold} Gold, +${rewardHp} HP & +${rewardXp} XP awarded (${target}m scaled).`,
                 });
               }
 

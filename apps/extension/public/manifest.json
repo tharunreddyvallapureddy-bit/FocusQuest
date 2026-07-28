@@ -5,13 +5,25 @@
   "description": "Gamified digital wellbeing: turn your browsing into an RPG.",
   "permissions": ["storage", "tabs", "activeTab", "alarms", "idle", "declarativeNetRequest", "notifications"],
   "host_permissions": ["<all_urls>"],
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
   "background": {
     "service_worker": "background.js",
     "type": "module"
   },
   "action": {
     "default_popup": "index.html",
-    "default_title": "Focus Quest"
+    "default_title": "Focus Quest",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
   },
   "side_panel": {
     "default_path": "index.html"
