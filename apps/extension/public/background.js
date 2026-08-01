@@ -192,9 +192,15 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
             return true;
           });
 
-          // AUTOMATIC BACKGROUND GOAL VERIFICATION & TICKING
-          currentGoals = currentGoals.map((g) => {
-            if (g.isCompleted) return g;
+          let creditedGoalIds = Array.from(new Set(playerState.creditedGoalIds || []));
+
+          // AUTOMATIC BACKGROUND GOAL VERIFICATION, CREDITING & AUTO-DELETION
+          const activeGoals = [];
+          currentGoals.forEach((g) => {
+            if (g.isCompleted) {
+              // Auto-prune already completed quests
+              return;
+            }
 
             const target = g.targetMinutes || 30;
             const nextProgress = (g.progressMinutes || 0) + 1;
@@ -209,31 +215,29 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
               coins += rewardGold;
               hp = Math.min(maxHp, hp + rewardHp);
               intellectXp += rewardXp;
+              creditedGoalIds.push(g.id);
 
               // Send Chrome Notification for Auto-Verification
               if (chrome.notifications) {
                 chrome.notifications.create({
                   type: "basic",
                   iconUrl: "icons/icon-48.png",
-                  title: "🛡️ Quest Auto-Verified & Completed!",
-                  message: `Quest "${g.title}" verified by background study tracking! +${rewardGold} Gold, +${rewardHp} HP & +${rewardXp} XP awarded (${target}m scaled).`,
+                  title: "🛡️ Quest Completed & Auto-Deleted!",
+                  message: `Quest "${g.title}" completed by study tracking! +${rewardGold} Gold, +${rewardHp} HP & +${rewardXp} XP awarded.`,
                 });
               }
 
-              console.log(`[Focus Quest] Quest AUTO-VERIFIED & COMPLETED: ${g.title}`);
-              return {
+              console.log(`[Focus Quest] Quest AUTO-VERIFIED, COMPLETED & DELETED: ${g.title}`);
+              // Auto-completed quest is NOT pushed back to activeGoals (auto-deleted)
+            } else {
+              activeGoals.push({
                 ...g,
-                progressMinutes: target,
-                isCompleted: true,
-                autoVerified: true,
-              };
+                progressMinutes: nextProgress,
+              });
             }
-
-            return {
-              ...g,
-              progressMinutes: nextProgress,
-            };
           });
+
+          currentGoals = activeGoals;
 
           console.log(`[Focus Quest] Study reward applied. HP: ${hp.toFixed(1)}, XP: ${intellectXp}`);
         }
@@ -245,6 +249,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
           coins: Math.round(coins * 10) / 10,
           intellectXp,
           isDead,
+          creditedGoalIds: Array.from(new Set(creditedGoalIds)),
         };
 
         chrome.storage.local.set({

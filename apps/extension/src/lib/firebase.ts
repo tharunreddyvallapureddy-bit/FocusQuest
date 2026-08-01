@@ -64,6 +64,7 @@ export {
   addDoc,
   query,
   where,
+  onSnapshot,
 };
 export type { User };
 
@@ -181,11 +182,21 @@ export async function savePayoutRequestToFirestore(payout: {
 }) {
   try {
     const payoutsCol = collection(db, "payout_requests");
-    const docRef = await addDoc(payoutsCol, {
-      ...payout,
+    const cleanPayout = {
+      userId: payout.userId || "user_guest",
+      username: payout.username || payout.name || "Adventurer",
+      name: payout.name || payout.username || "",
+      email: payout.email || "",
+      mobileNumber: payout.mobileNumber || "",
+      upiId: payout.upiId || "",
+      goldAmount: payout.goldAmount || 0,
+      inrValue: payout.inrValue || "₹0.00",
+      status: payout.status || "PENDING_ADMIN_APPROVAL",
       createdAt: new Date().toISOString(),
-    });
-    console.log("[Firebase] Payout request saved with ID:", docRef.id, payout);
+    };
+
+    const docRef = await addDoc(payoutsCol, cleanPayout);
+    console.log("[Firebase] Payout request saved successfully with ID:", docRef.id, cleanPayout);
     return docRef.id;
   } catch (err) {
     console.warn("[Firebase] Error saving payout request:", err);

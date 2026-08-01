@@ -7,6 +7,7 @@ import {
   updateDoc,
   deleteDoc,
   getDoc,
+  onSnapshot,
 } from "../../lib/firebase";
 
 type PayoutRequest = {
@@ -56,7 +57,7 @@ export const AdminPortalModule: React.FC<AdminPortalModuleProps> = ({ onClose })
     setTimeout(() => setToastMessage(null), 3000);
   };
 
-  // Fetch Firestore Data for Admin Oversight
+  // Fetch Firestore Data for Admin Oversight (Manual Fallback / Force Refresh)
   const fetchAdminData = async () => {
     setLoading(true);
     try {
@@ -67,7 +68,11 @@ export const AdminPortalModule: React.FC<AdminPortalModuleProps> = ({ onClose })
       payoutsSnapshot.forEach((docSnap) => {
         payoutsList.push({ id: docSnap.id, ...(docSnap.data() as any) });
       });
-      payoutsList.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      payoutsList.sort((a, b) => {
+        const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return (isNaN(timeB) ? 0 : timeB) - (isNaN(timeA) ? 0 : timeA);
+      });
       setPayoutRequests(payoutsList);
 
       // 2. Fetch All Student User Profiles (Filter out Admin & De-duplicate)
@@ -120,8 +125,82 @@ export const AdminPortalModule: React.FC<AdminPortalModuleProps> = ({ onClose })
     }
   };
 
+  // Real-time Firestore Subscriptions for Payout Requests & Profiles
   useEffect(() => {
-    fetchAdminData();
+    setLoading(true);
+    const payoutsCol = collection(db, "payout_requests");
+    const unsubscribePayouts = onSnapshot(
+      payoutsCol,
+      (snapshot) => {
+        const payoutsList: PayoutRequest[] = [];
+        snapshot.forEach((docSnap) => {
+          payoutsList.push({ id: docSnap.id, ...(docSnap.data() as any) });
+        });
+        payoutsList.sort((a, b) => {
+          const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+          const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+          return (isNaN(timeB) ? 0 : timeB) - (isNaN(timeA) ? 0 : timeA);
+        });
+        setPayoutRequests(payoutsList);
+        setLoading(false);
+      },
+      (err) => {
+        console.warn("[AdminPortal] Payouts snapshot error:", err);
+        setLoading(false);
+      }
+    );
+
+    const profilesCol = collection(db, "profiles");
+    const unsubscribeProfiles = onSnapshot(
+      profilesCol,
+      (snapshot) => {
+        const rawList: UserProfile[] = [];
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data() as any;
+          const email = (data.email || "").toLowerCase();
+          const username = (data.username || data.name || "").toLowerCase();
+          const role = (data.role || "").toUpperCase();
+          const isAdmin = data.isAdmin === true;
+
+          const isAdminAccount =
+            docSnap.id === "admin_tharun" ||
+            email === "vallapureddytharunreddy6281@gmail.com" ||
+            username === "tharun" ||
+            role === "ADMIN" ||
+            isAdmin;
+
+          if (!isAdminAccount) {
+            rawList.push({ id: docSnap.id, ...data });
+          }
+        });
+
+        const uniqueProfilesMap = new Map<string, UserProfile>();
+        rawList.forEach((profile) => {
+          const key = (profile.email || profile.username || profile.id).toLowerCase();
+          if (!uniqueProfilesMap.has(key)) {
+            uniqueProfilesMap.set(key, profile);
+          } else {
+            const existing = uniqueProfilesMap.get(key)!;
+            const isNewer =
+              new Date(profile.updatedAt || 0).getTime() >
+              new Date(existing.updatedAt || 0).getTime();
+            if (isNewer || (profile.xp || 0) > (existing.xp || 0)) {
+              uniqueProfilesMap.set(key, profile);
+            }
+          }
+        });
+
+        setUserProfiles(Array.from(uniqueProfilesMap.values()));
+      },
+      (err) => {
+        console.warn("[AdminPortal] Profiles snapshot error:", err);
+      }
+    );
+
+    return () => {
+      unsubscribePayouts();
+      unsubscribeProfiles();
+    };
   }, []);
 
   // Admin Action: Approve Payout & Transfer INR via UPI

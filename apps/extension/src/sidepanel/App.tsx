@@ -21,6 +21,7 @@ import {
   loadProfileFromFirestore,
   savePayoutRequestToFirestore,
   syncAdminProfileToFirestore,
+  onSnapshot,
   User,
 } from "../lib/firebase";
 
@@ -55,6 +56,7 @@ type PlayerState = {
   upiId?: string;
   isLoggedIn?: boolean;
   isAdmin?: boolean;
+  creditedGoalIds?: string[];
 };
 
 const DEFAULT_PLAYER: PlayerState = {
@@ -110,6 +112,55 @@ export const App: React.FC = () => {
   // Admin Portal State
   const [showAdminPortal, setShowAdminPortal] = useState(false);
 
+  // Self-healing function to verify, rectify rewards, and auto-delete completed goals
+  const verifyAndRectifyUncreditedRewards = (
+    currentPlayer: PlayerState,
+    currentGoals: Goal[]
+  ): { nextPlayer: PlayerState; activeGoals: Goal[] } => {
+    const creditedIds = new Set(currentPlayer.creditedGoalIds || []);
+    let additionalGold = 0;
+    let additionalHp = 0;
+    let additionalXp = 0;
+    let updated = false;
+
+    const activeGoals: Goal[] = [];
+
+    currentGoals.forEach((goal) => {
+      const target = goal.targetMinutes || 30;
+      const progress = goal.progressMinutes || 0;
+      const isDone = goal.isCompleted || progress >= target;
+
+      if (isDone) {
+        updated = true;
+        if (!creditedIds.has(goal.id)) {
+          const rewards = calculateQuestRewards(target);
+          additionalGold += rewards.gold;
+          additionalHp += rewards.hp;
+          additionalXp += rewards.xp;
+          creditedIds.add(goal.id);
+        }
+        // Auto-delete completed quest (do not push to activeGoals)
+      } else {
+        activeGoals.push(goal);
+      }
+    });
+
+    const nextPlayer: PlayerState = updated
+      ? {
+          ...currentPlayer,
+          coins: (currentPlayer.coins || 0) + additionalGold,
+          hp: Math.min(
+            currentPlayer.maxHp || BASE_MAX_HP,
+            (currentPlayer.hp || 300) + additionalHp
+          ),
+          intellectXp: (currentPlayer.intellectXp || 0) + additionalXp,
+          creditedGoalIds: Array.from(creditedIds),
+        }
+      : currentPlayer;
+
+    return { nextPlayer, activeGoals };
+  };
+
   // Initialize Auth & Storage listeners
   useEffect(() => {
     syncAdminProfileToFirestore();
@@ -120,12 +171,16 @@ export const App: React.FC = () => {
       if (user) {
         const cloudProfile = await loadProfileFromFirestore(user.uid);
         setPlayer((prev) => {
-          const synced: PlayerState = {
+          const mergedCoins = Math.max(cloudProfile?.gold ?? 0, prev.coins ?? 0);
+          const mergedXp = Math.max(cloudProfile?.xp ?? 0, prev.intellectXp ?? 0);
+          const mergedHp = cloudProfile?.hp !== undefined ? Math.max(cloudProfile.hp, prev.hp ?? 300) : (prev.hp ?? 300);
+
+          let synced: PlayerState = {
             ...prev,
-            hp: cloudProfile?.hp ?? prev.hp ?? 300,
+            hp: mergedHp,
             maxHp: cloudProfile?.maxHp ?? prev.maxHp ?? 300,
-            coins: cloudProfile?.gold ?? prev.coins ?? 100,
-            intellectXp: cloudProfile?.xp ?? prev.intellectXp ?? 0,
+            coins: mergedCoins,
+            intellectXp: mergedXp,
             isDead: cloudProfile?.isDead ?? prev.isDead ?? false,
             avatarSeed: cloudProfile?.avatarSeed ?? prev.avatarSeed ?? "AdventurerHero",
             customAvatarUrl: cloudProfile?.customAvatarUrl || prev.customAvatarUrl || "",
@@ -135,8 +190,35 @@ export const App: React.FC = () => {
             email: user.email || prev.email || "",
             upiId: cloudProfile?.upiId || prev.upiId || "",
             isLoggedIn: true,
+            creditedGoalIds: Array.from(new Set([...(cloudProfile?.creditedGoalIds || []), ...(prev.creditedGoalIds || [])])),
           };
+
+          const { nextPlayer: rectifiedPlayer, activeGoals } = verifyAndRectifyUncreditedRewards(synced, goals);
+          synced = rectifiedPlayer;
+          if (activeGoals.length !== goals.length) {
+            persistGoals(activeGoals);
+          }
           saveToLocal(synced);
+
+          const targetUid = user.uid || (synced.email ? "user_" + synced.email.replace(/[^a-zA-Z0-9]/g, "_") : null);
+          if (targetUid) {
+            syncProfileToFirestore(targetUid, {
+              username: synced.username || synced.name || "",
+              name: synced.name || synced.username || "",
+              email: synced.email || user.email || "",
+              mobileNumber: synced.mobileNumber || "",
+              upiId: synced.upiId || "",
+              xp: synced.intellectXp,
+              hp: synced.hp,
+              maxHp: synced.maxHp,
+              gold: synced.coins,
+              level: calculateLevel(synced.intellectXp),
+              isDead: synced.isDead,
+              avatarSeed: synced.avatarSeed,
+              customAvatarUrl: synced.customAvatarUrl || "",
+              focusMode: synced.focusMode,
+            });
+          }
           return synced;
         });
       }
@@ -148,10 +230,67 @@ export const App: React.FC = () => {
     ) => {
       if (areaName !== "local") return;
       if (changes.playerState?.newValue) {
-        setPlayer(changes.playerState.newValue as PlayerState);
+        const nextPlayer = changes.playerState.newValue as PlayerState;
+        setPlayer((prev) => {
+          const { nextPlayer: rectified, activeGoals } = verifyAndRectifyUncreditedRewards(nextPlayer, goals);
+          if (activeGoals.length !== goals.length) {
+            persistGoals(activeGoals);
+          }
+          const targetUid =
+            auth.currentUser?.uid ||
+            currentUser?.uid ||
+            (rectified.email ? "user_" + rectified.email.replace(/[^a-zA-Z0-9]/g, "_") : null);
+          if (targetUid) {
+            syncProfileToFirestore(targetUid, {
+              username: rectified.username || rectified.name || "",
+              name: rectified.name || rectified.username || "",
+              email: rectified.email || auth.currentUser?.email || "",
+              mobileNumber: rectified.mobileNumber || "",
+              upiId: rectified.upiId || "",
+              xp: rectified.intellectXp,
+              hp: rectified.hp,
+              maxHp: rectified.maxHp,
+              gold: rectified.coins,
+              level: calculateLevel(rectified.intellectXp),
+              isDead: rectified.isDead,
+              avatarSeed: rectified.avatarSeed,
+              customAvatarUrl: rectified.customAvatarUrl || "",
+              focusMode: rectified.focusMode,
+            });
+          }
+          return rectified;
+        });
       }
       if (changes.goals?.newValue) {
-        setGoals(changes.goals.newValue as Goal[]);
+        const nextGoals = changes.goals.newValue as Goal[];
+        setPlayer((prev) => {
+          const { nextPlayer: rectified, activeGoals } = verifyAndRectifyUncreditedRewards(prev, nextGoals);
+          setGoals(activeGoals);
+          saveToLocal(rectified);
+          const targetUid =
+            auth.currentUser?.uid ||
+            currentUser?.uid ||
+            (rectified.email ? "user_" + rectified.email.replace(/[^a-zA-Z0-9]/g, "_") : null);
+          if (targetUid) {
+            syncProfileToFirestore(targetUid, {
+              username: rectified.username || rectified.name || "",
+              name: rectified.name || rectified.username || "",
+              email: rectified.email || auth.currentUser?.email || "",
+              mobileNumber: rectified.mobileNumber || "",
+              upiId: rectified.upiId || "",
+              xp: rectified.intellectXp,
+              hp: rectified.hp,
+              maxHp: rectified.maxHp,
+              gold: rectified.coins,
+              level: calculateLevel(rectified.intellectXp),
+              isDead: rectified.isDead,
+              avatarSeed: rectified.avatarSeed,
+              customAvatarUrl: rectified.customAvatarUrl || "",
+              focusMode: rectified.focusMode,
+            });
+          }
+          return rectified;
+        });
       }
     };
 
@@ -166,6 +305,93 @@ export const App: React.FC = () => {
       }
     };
   }, []);
+
+  // Real-time Firestore Listener for User's UPI Payout Requests (Approved, Pending, Rejected)
+  useEffect(() => {
+    if (!player.isLoggedIn && !currentUser && !player.email) return;
+
+    const userEmail = (player.email || currentUser?.email || "").toLowerCase();
+    const userUsername = (player.username || player.name || "").toLowerCase();
+    const targetUid =
+      auth.currentUser?.uid ||
+      currentUser?.uid ||
+      (userEmail ? "user_" + userEmail.replace(/[^a-zA-Z0-9]/g, "_") : null);
+
+    const payoutsCol = collection(db, "payout_requests");
+    const unsubscribeUserPayouts = onSnapshot(
+      payoutsCol,
+      (snapshot) => {
+        const myRequests: any[] = [];
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data();
+          const reqEmail = (data.email || "").toLowerCase();
+          const reqUsername = (data.username || data.name || "").toLowerCase();
+          const reqUserId = data.userId || "";
+
+          const isMyRequest =
+            (targetUid && reqUserId === targetUid) ||
+            (userEmail && reqEmail && reqEmail === userEmail) ||
+            (userUsername && reqUsername && reqUsername === userUsername);
+
+          if (isMyRequest) {
+            myRequests.push({
+              id: docSnap.id,
+              gold: data.goldAmount,
+              inr: data.inrValue,
+              upiId: data.upiId,
+              status: data.status,
+              createdAt: data.createdAt,
+            });
+          }
+        });
+
+        myRequests.sort((a, b) => {
+          const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+          const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+          return (isNaN(timeB) ? 0 : timeB) - (isNaN(timeA) ? 0 : timeA);
+        });
+
+        setUpiPayoutRequests(myRequests);
+      },
+      (err) => {
+        console.warn("[App] Error listening to user payout requests:", err);
+      }
+    );
+
+    return () => unsubscribeUserPayouts();
+  }, [player.isLoggedIn, player.email, player.username, currentUser]);
+
+  const renderPayoutStatusBadge = (status: string) => {
+    const s = (status || "").toUpperCase();
+    if (s.includes("APPROVED") || s.includes("TRANSFERRED") || s.includes("COMPLETED")) {
+      return (
+        <div className="flex flex-col items-end">
+          <span className="text-[9px] font-extrabold text-emerald-400 bg-emerald-950 px-2 py-0.5 rounded border border-emerald-700/60 shadow-sm flex items-center gap-1">
+            <span>✅</span> APPROVED & TRANSFERRED
+          </span>
+          <span className="text-[8px] text-emerald-400/80 font-mono mt-0.5">UPI Transfer Completed</span>
+        </div>
+      );
+    }
+    if (s.includes("REJECTED")) {
+      return (
+        <div className="flex flex-col items-end">
+          <span className="text-[9px] font-extrabold text-rose-400 bg-rose-950 px-2 py-0.5 rounded border border-rose-700/60 shadow-sm flex items-center gap-1">
+            <span>❌</span> REJECTED
+          </span>
+          <span className="text-[8px] text-rose-400/80 font-mono mt-0.5">Gold Refunded to Account</span>
+        </div>
+      );
+    }
+    return (
+      <div className="flex flex-col items-end">
+        <span className="text-[9px] font-extrabold text-amber-300 bg-amber-950 px-2 py-0.5 rounded border border-amber-700/60 shadow-sm flex items-center gap-1 animate-pulse">
+          <span>⏳</span> PENDING APPROVAL
+        </span>
+        <span className="text-[8px] text-amber-400/80 font-mono mt-0.5">Under Admin Review</span>
+      </div>
+    );
+  };
 
   const triggerToast = (msg: string) => {
     setNotification(msg);
@@ -208,11 +434,38 @@ export const App: React.FC = () => {
         );
         const { updatedGoals, expiredCount } = checkMidnightDailyReset(rawGoals);
 
-        setPlayer(storedPlayer ?? DEFAULT_PLAYER);
-        setGoals(updatedGoals);
-        if (storedGoals && storedGoals.length !== updatedGoals.length) {
-          persistGoals(updatedGoals);
+        let initialPlayer = storedPlayer ?? DEFAULT_PLAYER;
+        const { nextPlayer: rectifiedPlayer, activeGoals } = verifyAndRectifyUncreditedRewards(initialPlayer, updatedGoals);
+        initialPlayer = rectifiedPlayer;
+
+        setPlayer(initialPlayer);
+        setGoals(activeGoals);
+        saveToLocal(initialPlayer);
+        persistGoals(activeGoals);
+
+        const targetUid =
+          auth.currentUser?.uid ||
+          currentUser?.uid ||
+          (initialPlayer.email ? "user_" + initialPlayer.email.replace(/[^a-zA-Z0-9]/g, "_") : null);
+        if (targetUid) {
+          syncProfileToFirestore(targetUid, {
+            username: initialPlayer.username || initialPlayer.name || "",
+            name: initialPlayer.name || initialPlayer.username || "",
+            email: initialPlayer.email || auth.currentUser?.email || "",
+            mobileNumber: initialPlayer.mobileNumber || "",
+            upiId: initialPlayer.upiId || "",
+            xp: initialPlayer.intellectXp,
+            hp: initialPlayer.hp,
+            maxHp: initialPlayer.maxHp,
+            gold: initialPlayer.coins,
+            level: calculateLevel(initialPlayer.intellectXp),
+            isDead: initialPlayer.isDead,
+            avatarSeed: initialPlayer.avatarSeed,
+            customAvatarUrl: initialPlayer.customAvatarUrl || "",
+            focusMode: initialPlayer.focusMode,
+          });
         }
+
         if (expiredCount > 0) {
           triggerToast(`⚠️ ${expiredCount} uncompleted daily quest(s) expired at 12:00 AM! Rewards forfeited.`);
         }
@@ -271,28 +524,29 @@ export const App: React.FC = () => {
   };
 
   const handleToggleGoal = async (goal: Goal) => {
-    if (goal.isCompleted) return;
-
-    const updatedGoals = goals.map((g) =>
-      g.id === goal.id ? { ...g, isCompleted: true } : g
-    );
+    const targetMins = goal.targetMinutes || 30;
+    // Auto-delete task from goals list upon completion
+    const updatedGoals = goals.filter((g) => g.id !== goal.id);
     persistGoals(updatedGoals);
 
-    const rewards = calculateQuestRewards(goal.targetMinutes || 30);
+    const rewards = calculateQuestRewards(targetMins);
     const rewardHp = rewards.hp;
     const rewardCoins = rewards.gold;
     const rewardXp = rewards.xp;
 
-    const newXp = player.intellectXp + rewardXp;
+    const newXp = (player.intellectXp || 0) + rewardXp;
+    const creditedIds = Array.from(new Set([...(player.creditedGoalIds || []), goal.id]));
+
     const next: PlayerState = {
       ...player,
-      hp: Math.min(player.hp + rewardHp, player.maxHp),
-      coins: player.coins + rewardCoins,
+      hp: Math.min(player.maxHp || BASE_MAX_HP, (player.hp || 300) + rewardHp),
+      coins: (player.coins || 0) + rewardCoins,
       intellectXp: newXp,
       isDead: false,
+      creditedGoalIds: creditedIds,
     };
     await persistPlayer(next);
-    triggerToast(`🎉 Quest Complete! +${rewardCoins} Gold, +${rewardHp} HP, +${rewardXp} XP (${goal.targetMinutes || 30}m scaled)`);
+    triggerToast(`🎉 Quest Completed & Deleted! +${rewardCoins} Gold, +${rewardHp} HP, +${rewardXp} XP (${targetMins}m scaled)`);
   };
 
   const handleAddGoal = (e: React.FormEvent) => {
@@ -556,15 +810,16 @@ export const App: React.FC = () => {
         if (userCred.user) {
           const cloudProfile = await loadProfileFromFirestore(userCred.user.uid);
           if (cloudProfile) {
-            userProfile.hp = cloudProfile.hp ?? player.hp;
-            userProfile.maxHp = cloudProfile.maxHp ?? player.maxHp;
-            userProfile.coins = cloudProfile.gold ?? player.coins;
-            userProfile.intellectXp = cloudProfile.xp ?? player.intellectXp;
-            userProfile.isDead = cloudProfile.isDead ?? player.isDead;
+            userProfile.hp = cloudProfile.hp !== undefined ? Math.max(cloudProfile.hp, player.hp || 300) : (player.hp || 300);
+            userProfile.maxHp = cloudProfile.maxHp ?? player.maxHp ?? 300;
+            userProfile.coins = Math.max(cloudProfile.gold ?? 0, player.coins ?? 0);
+            userProfile.intellectXp = Math.max(cloudProfile.xp ?? 0, player.intellectXp ?? 0);
+            userProfile.isDead = cloudProfile.isDead ?? player.isDead ?? false;
             userProfile.username = cloudProfile.username || cloudProfile.name || targetUsername;
             userProfile.name = cloudProfile.name || cloudProfile.username || targetUsername;
             userProfile.mobileNumber = cloudProfile.mobileNumber || "";
             userProfile.upiId = cloudProfile.upiId || targetUpi;
+            userProfile.creditedGoalIds = Array.from(new Set([...(cloudProfile.creditedGoalIds || []), ...(player.creditedGoalIds || [])]));
           }
         }
       }
@@ -950,6 +1205,50 @@ export const App: React.FC = () => {
                 </div>
               </div>
             </div>
+
+            {/* Real-Time UPI Payout Requests Status Tracker */}
+            {upiPayoutRequests.length > 0 && (
+              <div className="p-3 rounded-xl border border-amber-500/30 bg-slate-900/80 glass-card space-y-2.5">
+                <div className="flex justify-between items-center">
+                  <div className="flex items-center gap-1.5 font-bold text-xs text-amber-300">
+                    <span>💸 My UPI Payout Requests</span>
+                    <span className="px-1.5 py-0.2 rounded-full bg-amber-950 text-amber-400 text-[9px] border border-amber-800 font-mono">
+                      {upiPayoutRequests.length}
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => setShowUpiModal(true)}
+                    className="text-[10px] font-bold text-emerald-400 hover:underline cursor-pointer"
+                  >
+                    + Cash Out Gold
+                  </button>
+                </div>
+
+                <div className="space-y-2 max-h-[180px] overflow-y-auto pr-1">
+                  {upiPayoutRequests.map((req) => (
+                    <div
+                      key={req.id}
+                      className="p-2.5 rounded-xl bg-slate-950 border border-slate-800 space-y-1.5 glass-card"
+                    >
+                      <div className="flex justify-between items-center text-xs">
+                        <div className="flex items-center gap-1.5 font-bold font-mono">
+                          <span className="text-amber-400 font-extrabold">🪙 {req.gold} Gold</span>
+                          <span className="text-slate-500">➔</span>
+                          <span className="text-emerald-400 font-extrabold">{req.inr}</span>
+                        </div>
+                        {renderPayoutStatusBadge(req.status)}
+                      </div>
+                      <div className="flex justify-between items-center text-[10px] text-slate-400 font-mono pt-1 border-t border-slate-900">
+                        <span>UPI ID: <strong className="text-slate-200">{req.upiId || player.upiId || authUpiId}</strong></span>
+                        {req.createdAt && (
+                          <span>{new Date(req.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </section>
         ) : tab === "goals" ? (
           <section className="space-y-3">
@@ -1092,9 +1391,14 @@ export const App: React.FC = () => {
                     }`}
                   >
                     <div className="flex items-start gap-2.5">
-                      <div className="mt-0.5 text-base select-none shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => handleToggleGoal(goal)}
+                        className="mt-0.5 text-base select-none shrink-0 cursor-pointer hover:scale-110 active:scale-95 transition-transform bg-transparent border-0 p-0"
+                        title={goal.isCompleted ? "Quest Completed & Claimed" : "Click to complete quest & claim rewards"}
+                      >
                         {goal.isCompleted ? "✅" : "⏳"}
-                      </div>
+                      </button>
                       <div className="flex-1">
                         <div className="flex justify-between items-center">
                           <span
@@ -1645,26 +1949,36 @@ export const App: React.FC = () => {
               Submit Transfer to {player.upiId || authUpiId || "Your UPI ID"}
             </button>
 
-            {/* Payout Requests History */}
+            {/* Payout Requests History with Real-Time Status Tracking */}
             {upiPayoutRequests.length > 0 && (
-              <div className="space-y-1.5 pt-2 border-t border-slate-800">
-                <div className="text-[10px] font-bold uppercase text-slate-400">
-                  Recent UPI Transfers
+              <div className="space-y-2 pt-2 border-t border-slate-800">
+                <div className="flex justify-between items-center text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                  <span>📋 Your UPI Request History ({upiPayoutRequests.length})</span>
+                  <span className="text-[9px] text-emerald-400 font-mono">Live Cloud Sync</span>
                 </div>
-                {upiPayoutRequests.map((req) => (
-                  <div
-                    key={req.id}
-                    className="p-2 rounded-lg bg-slate-950 border border-slate-800 flex justify-between items-center text-[10px]"
-                  >
-                    <div>
-                      <span className="font-bold text-amber-400">{req.gold} Gold</span> (
-                      <span className="text-emerald-400">{req.inr}</span>)
+                <div className="space-y-2 max-h-[160px] overflow-y-auto pr-1">
+                  {upiPayoutRequests.map((req) => (
+                    <div
+                      key={req.id}
+                      className="p-2.5 rounded-xl bg-slate-950 border border-slate-800 space-y-1.5 glass-card"
+                    >
+                      <div className="flex justify-between items-center text-xs">
+                        <div className="flex items-center gap-1.5 font-bold font-mono">
+                          <span className="text-amber-400 font-extrabold">🪙 {req.gold} Gold</span>
+                          <span className="text-slate-500">➔</span>
+                          <span className="text-emerald-400 font-extrabold">{req.inr}</span>
+                        </div>
+                        {renderPayoutStatusBadge(req.status)}
+                      </div>
+                      <div className="flex justify-between items-center text-[10px] text-slate-400 font-mono pt-1 border-t border-slate-900">
+                        <span>UPI ID: <strong className="text-slate-200">{req.upiId || player.upiId || authUpiId}</strong></span>
+                        {req.createdAt && (
+                          <span>{new Date(req.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                        )}
+                      </div>
                     </div>
-                    <div className="text-[9px] font-bold text-emerald-400 bg-emerald-950 px-1.5 py-0.5 rounded border border-emerald-800">
-                      {req.status}
-                    </div>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
             )}
           </div>
