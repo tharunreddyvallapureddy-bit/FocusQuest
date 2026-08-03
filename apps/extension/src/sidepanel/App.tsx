@@ -106,7 +106,7 @@ export const App: React.FC = () => {
 
   // UPI Cash Out & Developer Ad State
   const [showUpiModal, setShowUpiModal] = useState(false);
-  const [upiGoldAmount, setUpiGoldAmount] = useState(100);
+  const [upiGoldAmount, setUpiGoldAmount] = useState(200);
   const [upiPayoutRequests, setUpiPayoutRequests] = useState<any[]>([]);
 
   // Admin Portal State
@@ -617,9 +617,15 @@ export const App: React.FC = () => {
     triggerToast(`📺 Ad Reward Claimed! +${gold} Gold & +${hp} HP`);
   };
 
+  const MIN_CASHOUT_GOLD = 200; // Minimum 200 Gold = ₹1.00 INR
+
   const handleRequestUpiPayout = async () => {
-    if (upiGoldAmount <= 0 || upiGoldAmount > player.coins) {
-      triggerToast("⚠️ Invalid Gold amount or insufficient balance.");
+    if (upiGoldAmount < MIN_CASHOUT_GOLD) {
+      triggerToast(`⚠️ Minimum cash out amount is ₹1.00 (${MIN_CASHOUT_GOLD} Gold).`);
+      return;
+    }
+    if (upiGoldAmount > player.coins) {
+      triggerToast(`⚠️ Insufficient Gold balance! You have ${player.coins} Gold.`);
       return;
     }
 
@@ -1886,19 +1892,20 @@ export const App: React.FC = () => {
               </div>
               <div className="text-[10px] text-slate-300 flex justify-between">
                 <span>Conversion Rate: <strong className="text-amber-400">100 Gold = ₹0.50 INR</strong></span>
-                <span className="text-slate-400">Owner: {player.name || "Student User"}</span>
+                <span className="text-amber-300 font-bold">Min Cash Out: ₹1.00 (200 🪙)</span>
               </div>
             </div>
 
             {/* Gold Input Form */}
             <div className="space-y-2">
-              <label className="block text-[11px] font-semibold text-slate-300">
-                Enter Gold Amount to Sell:
-              </label>
+              <div className="flex justify-between items-center text-[11px] font-semibold text-slate-300">
+                <label>Enter Gold Amount to Sell:</label>
+                <span className="text-[10px] text-slate-400 font-mono">Min 200 Gold = ₹1.00</span>
+              </div>
               <div className="flex items-center gap-2">
                 <input
                   type="number"
-                  min="10"
+                  min="200"
                   max={player.coins}
                   value={upiGoldAmount}
                   onChange={(e) => setUpiGoldAmount(Math.max(0, Number(e.target.value)))}
@@ -1911,6 +1918,12 @@ export const App: React.FC = () => {
                   MAX
                 </button>
               </div>
+
+              {upiGoldAmount < 200 && (
+                <div className="text-[10px] text-amber-400 font-bold flex items-center gap-1">
+                  <span>⚠️</span> Minimum cash out amount is ₹1.00 (200 Gold)
+                </div>
+              )}
 
               {/* Real Money Equivalent Output */}
               <div className="p-2.5 rounded-xl bg-slate-950 border border-slate-800 flex justify-between items-center">
@@ -1942,11 +1955,11 @@ export const App: React.FC = () => {
 
             {/* Transfer Request Button */}
             <button
-              disabled={upiGoldAmount <= 0 || upiGoldAmount > player.coins || !(player.upiId || authUpiId)}
+              disabled={upiGoldAmount < 200 || upiGoldAmount > player.coins || !(player.upiId || authUpiId)}
               onClick={handleRequestUpiPayout}
               className="w-full py-2.5 text-xs font-bold rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 text-slate-950 shadow-lg disabled:opacity-50 cursor-pointer"
             >
-              Submit Transfer to {player.upiId || authUpiId || "Your UPI ID"}
+              Submit Transfer ({goldToINR(upiGoldAmount)}) to {player.upiId || authUpiId || "Your UPI ID"}
             </button>
 
             {/* Payout Requests History with Real-Time Status Tracking */}
